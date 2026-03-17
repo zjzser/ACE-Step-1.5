@@ -1490,8 +1490,11 @@ class LLMHandler:
                         seeds=seeds,
                     )
             except Exception as e:
-                error_msg = f"Error in batch codes generation: {type(e).__name__}: {e}\n{traceback.format_exc()}"
-                logger.error(error_msg)
+                error_detail = traceback.format_exc()
+                logger.error(
+                    f"Error in batch codes generation: {type(e).__name__}: {e}\n{error_detail}"
+                )
+                error_msg = f"Error in batch codes generation: {type(e).__name__}: {e}"
                 return {
                     "metadata": [],
                     "audio_codes": [],
