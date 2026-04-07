@@ -169,4 +169,8 @@ class AceStepHandler(
         # MLX VAE acceleration (macOS Apple Silicon only)
         self.mlx_vae = None
         self.use_mlx_vae = False
+        # MLX VAE decode chunk size — auto-detected from gpu_config,
+        # overridable via the Gradio UI slider or ACESTEP_MLX_VAE_CHUNK env var.
+        from acestep.gpu_config import get_global_gpu_config as _get_gpu_cfg
+        self.mlx_vae_chunk_size = _get_gpu_cfg().mlx_vae_chunk_size
 

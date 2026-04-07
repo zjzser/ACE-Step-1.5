@@ -87,9 +87,7 @@ class MlxVaeDecodeNativeMixin:
             decode_fn = self._resolve_mlx_decode_fn()
 
         latent_frames = z_nlc.shape[1]
-        # Smaller chunks reduce peak memory on unified-memory Apple Silicon.
-        # 512 produces byte-identical output to 2048 with ~56% less peak GPU.
-        mlx_chunk = 512
+        mlx_chunk = max(192, getattr(self, "mlx_vae_chunk_size", 512))
         mlx_overlap = 64
 
         if latent_frames <= mlx_chunk:

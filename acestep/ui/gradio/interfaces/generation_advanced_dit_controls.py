@@ -4,6 +4,7 @@ from typing import Any
 
 import gradio as gr
 
+from acestep.gpu_config import get_global_gpu_config, is_mps_platform
 from acestep.ui.gradio.help_content import create_help_button
 from acestep.ui.gradio.i18n import t
 
@@ -134,6 +135,18 @@ def build_dit_controls(ui_config: dict[str, Any]) -> dict[str, Any]:
                     info=t("generation.random_seed_info"),
                     elem_classes=["has-info-container"],
                 )
+        _gpu_config = get_global_gpu_config()
+        _show_mlx_chunk = is_mps_platform()
+        with gr.Row(visible=_show_mlx_chunk):
+            mlx_vae_chunk_size = gr.Slider(
+                minimum=64,
+                maximum=2048,
+                value=_gpu_config.mlx_vae_chunk_size,
+                step=64,
+                label="MLX VAE Chunk Size",
+                info="Larger = faster decode but more memory. Auto-detected based on your system.",
+                elem_classes=["has-info-container"],
+            )
     return {
         "inference_steps": inference_steps,
         "guidance_scale": guidance_scale,
@@ -148,4 +161,5 @@ def build_dit_controls(ui_config: dict[str, Any]) -> dict[str, Any]:
         "cfg_interval_end": cfg_interval_end,
         "seed": seed,
         "random_seed_checkbox": random_seed_checkbox,
+        "mlx_vae_chunk_size": mlx_vae_chunk_size,
     }
