@@ -247,15 +247,43 @@ class FixedLoRATrainer:
         if num_devices == 1 and strategy_cfg == "ddp":
             strategy_cfg = "auto"
 
-        if num_devices > 1:
+        if cfg.full_sft and num_devices > 1:  # Only this two conditions are satisfied : DeepSpeed：1： - cfg.full_sft == True  2：- num_devices > 1
+            # Full SFT on multi-GPU uses DeepSpeed ZeRO to reduce memory pressure.
+            from lightning.fabric.strategies import DeepSpeedStrategy
+
+            ds_config = {
+                "zero_optimization": {
+                    "stage": 2,
+                    "offload_optimizer": {
+                        "device": "cpu",
+                        "pin_memory": True,
+                    },
+                    "allgather_partitions": True,
+                    "allgather_bucket_size": 2e8,
+                    "reduce_scatter": True,
+                    "reduce_bucket_size": 2e8,
+                    "overlap_comm": True,
+                },
+                "bf16": {"enabled": True},
+                "gradient_clipping": cfg.max_grad_norm,
+                # Allow the existing external AdamW optimizer with ZeRO CPU offload. To Call lines 257 - 260
+                "zero_force_ds_cpu_optimizer": False,
+            }
+            fabric_strategy = DeepSpeedStrategy(config=ds_config)
+            fabric_strategy_label = "deepspeed_zero2"
+            accelerator = "cuda"
+            precision = "bf16-true"
+        elif num_devices > 1:
             # Multi-GPU DDP mode
             fabric_strategy = "ddp"
+            fabric_strategy_label = "ddp"
         else:
             # Single-GPU mode: set default CUDA device so Fabric picks up
             # the correct GPU.  Passing devices=[index] (a list) on Windows
             # causes Fabric to create a DistributedSampler wrapper that
             # yields 0 batches, so we always use devices=1 (integer).
             fabric_strategy = strategy_cfg if strategy_cfg != "auto" else "auto"
+            fabric_strategy_label = str(fabric_strategy)
             if device_type == "cuda":
                 device_idx = self.module.device.index or 0
                 torch.cuda.set_device(device_idx)
@@ -282,7 +310,7 @@ class FixedLoRATrainer:
         if is_main:
             yield TrainingUpdate(
                 0, 0.0,
-                f"[INFO] Starting training (devices: {world_size}, strategy: {fabric_strategy}, precision: {precision})",
+                f"[INFO] Starting training (devices: {world_size}, strategy: {fabric_strategy_label}, precision: {precision})",
                 kind="info",
             )
 
@@ -434,9 +462,11 @@ class FixedLoRATrainer:
                 accumulation_step += 1
 
                 if accumulation_step >= cfg.gradient_accumulation_steps:
-                    self.fabric.clip_gradients(
-                        self.module.model.decoder, optimizer, max_norm=cfg.max_grad_norm,
-                    )
+                    # DeepSpeed applies gradient clipping from ds_config internally.
+                    if not (cfg.full_sft and num_devices > 1):
+                        self.fabric.clip_gradients(
+                            self.module.model.decoder, optimizer, max_norm=cfg.max_grad_norm,
+                        )
                     optimizer.step()
                     scheduler.step()
                     global_step += 1
@@ -469,9 +499,11 @@ class FixedLoRATrainer:
 
             # Flush remainder
             if accumulation_step > 0:
-                self.fabric.clip_gradients(
-                    self.module.model.decoder, optimizer, max_norm=cfg.max_grad_norm,
-                )
+                # DeepSpeed applies gradient clipping from ds_config internally.
+                if not (cfg.full_sft and num_devices > 1):
+                    self.fabric.clip_gradients(
+                        self.module.model.decoder, optimizer, max_norm=cfg.max_grad_norm,
+                    )
                 optimizer.step()
                 scheduler.step()
                 global_step += 1
@@ -530,13 +562,11 @@ class FixedLoRATrainer:
             if is_main:
                 tb.close()
                 yield TrainingUpdate(
-                    step=0, loss=0.0,
+                    step=0,
+                    loss=0.0,
                     msg=(
-                        "[FAIL] Training completed 0 steps -- no batches were processed.\n"
-                        "       Possible causes:\n"
-                        "         - Dataset directory is empty or contains no valid .pt files\n"
-                        "         - DataLoader failed to yield batches (device/platform issue)\n"
-                        "       Check the dataset path and try again."
+                        "[FAIL] Training completed without any optimizer steps.\n"
+                        "     Check dataset size, batch size, and gradient accumulation settings."
                     ),
                     kind="fail",
                 )
@@ -548,14 +578,22 @@ class FixedLoRATrainer:
             self._save_final(final_path)
             final_loss = self.module.training_losses[-1] if self.module.training_losses else 0.0
 
-            adapter_label = "LoKR" if self.adapter_type == "lokr" else "LoRA"
+            if self.training_config.full_sft:
+                adapter_label = "Full SFT decoder"
+            else:
+                adapter_label = "LoKR" if self.adapter_type == "lokr" else "LoRA"
             tb.flush()
             tb.close()
+            inference_msg = (
+                f"     Full SFT decoder checkpoint path: {final_path}"
+                if self.training_config.full_sft
+                else f"     For inference, set your LoRA path to: {final_path}"
+            )
             yield TrainingUpdate(
                 step=global_step, loss=final_loss,
                 msg=(
                     f"[OK] Training complete! {adapter_label} saved to {final_path}\n"
-                    f"     For inference, set your LoRA path to: {final_path}"
+                    f"{inference_msg}"
                 ),
                 kind="complete",
             )

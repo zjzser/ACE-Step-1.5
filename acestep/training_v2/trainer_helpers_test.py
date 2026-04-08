@@ -5,8 +5,39 @@ The save_adapter_flat function only needs attribute-level duck-typing, so
 plain MagicMock objects work as stand-ins for nn.Module subclasses.
 """
 
+import sys
+import types
 import unittest
 from unittest.mock import MagicMock, patch
+
+
+training_pkg = types.ModuleType("acestep.training")
+training_pkg.__path__ = []
+sys.modules.setdefault("acestep.training", training_pkg)
+
+lora_checkpoint = types.ModuleType("acestep.training.lora_checkpoint")
+def _load_training_checkpoint(*args, **kwargs):
+    return {}
+
+def _save_lora_weights(*args, **kwargs):
+    return None
+
+lora_checkpoint.load_training_checkpoint = _load_training_checkpoint
+lora_checkpoint.save_lora_weights = _save_lora_weights
+sys.modules["acestep.training.lora_checkpoint"] = lora_checkpoint
+training_pkg.lora_checkpoint = lora_checkpoint
+
+lokr_utils = types.ModuleType("acestep.training.lokr_utils")
+def _load_lokr_weights(*args, **kwargs):
+    return None
+
+def _save_lokr_weights(*args, **kwargs):
+    return None
+
+lokr_utils.load_lokr_weights = _load_lokr_weights
+lokr_utils.save_lokr_weights = _save_lokr_weights
+sys.modules["acestep.training.lokr_utils"] = lokr_utils
+training_pkg.lokr_utils = lokr_utils
 
 
 def _make_fabric_wrapper(inner: MagicMock) -> MagicMock:
@@ -40,7 +71,12 @@ def _make_full_model(decoder: MagicMock) -> MagicMock:
     return model
 
 
-def _make_trainer(decoder: MagicMock, adapter_type: str = "lora") -> MagicMock:
+def _make_trainer(
+    decoder: MagicMock,
+    adapter_type: str = "lora",
+    *,
+    full_sft: bool = False,
+) -> MagicMock:
     """Build a minimal trainer mock with the given decoder embedded."""
     full_model = _make_full_model(decoder)
     module = MagicMock()
@@ -48,6 +84,7 @@ def _make_trainer(decoder: MagicMock, adapter_type: str = "lora") -> MagicMock:
     trainer = MagicMock()
     trainer.adapter_type = adapter_type
     trainer.module = module
+    trainer.training_config = MagicMock(full_sft=full_sft)
     return trainer
 
 
@@ -133,5 +170,41 @@ class TestSaveAdapterFlatLora(unittest.TestCase):
         trainer.module.model.save_pretrained.assert_not_called()
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestSaveAdapterFlatFullSFT(unittest.TestCase):
+    """Full SFT saves decoder weights instead of adapter-only artifacts."""
+
+    def test_saves_decoder_state_and_optional_pretrained_layout(self):
+        """Full SFT mode should persist the decoder state dict and model layout."""
+        decoder = MagicMock(spec=["state_dict"])
+        decoder.state_dict.return_value = {"w": MagicMock()}
+        trainer = _make_trainer(decoder, full_sft=True)
+
+        from acestep.training_v2.trainer_helpers import save_adapter_flat
+
+        with (
+            patch("os.makedirs"),
+            patch("torch.save") as mock_torch_save,
+        ):
+            save_adapter_flat(trainer, "/tmp/out")
+
+        mock_torch_save.assert_called_once()
+        trainer.module.model.save_pretrained.assert_called_once_with("/tmp/out")
+
+    def test_save_final_skips_adapter_verification_for_full_sft(self):
+        """Full SFT final save should not run adapter-only verification."""
+        decoder = MagicMock(spec=["state_dict"])
+        decoder.state_dict.return_value = {}
+        trainer = _make_trainer(decoder, full_sft=True)
+
+        from acestep.training_v2.trainer_helpers import save_final
+
+        with (
+            patch("os.makedirs"),
+            patch("torch.save"),
+            patch("acestep.training_v2.trainer_helpers.verify_saved_adapter") as mock_verify,
+        ):
+            save_final(trainer, "/tmp/out")
+
+        mock_verify.assert_not_called()
+
+

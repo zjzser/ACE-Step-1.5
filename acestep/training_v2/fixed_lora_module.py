@@ -139,7 +139,9 @@ class FixedLoRAModule(nn.Module):
         self.adapter_info: Dict[str, Any] = {}
 
         # -- Adapter injection -----------------------------------------------
-        if self.adapter_type == "lokr":
+        if training_config.full_sft:
+            self._prepare_full_sft_model(model)
+        elif self.adapter_type == "lokr":
             self._inject_lokr(model, adapter_config)  # type: ignore[arg-type]
         else:
             self._inject_lora(model, adapter_config)  # type: ignore[arg-type]
@@ -183,6 +185,21 @@ class FixedLoRAModule(nn.Module):
     # -----------------------------------------------------------------------
     # Adapter injection helpers
     # -----------------------------------------------------------------------
+
+    def _prepare_full_sft_model(self, model: nn.Module) -> None:
+        """Keep only decoder parameters trainable for full SFT mode."""
+        if not hasattr(model, "decoder"):
+            raise AttributeError("Loaded model does not expose a decoder attribute")
+
+        self.model = model
+        for param in self.model.parameters():
+            param.requires_grad = False
+        for param in self.model.decoder.parameters():
+            param.requires_grad = True
+
+        self.adapter_info = {}
+        self.model.decoder.train()
+        logger.info("[OK] Full SFT enabled: decoder parameters remain trainable")
 
     def _inject_lora(self, model: nn.Module, cfg: LoRAConfigV2) -> None:
         """Inject LoRA adapters via PEFT.

@@ -142,6 +142,27 @@ def offload_non_decoder(model: nn.Module) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _save_full_sft_decoder(trainer: Any, output_dir: str) -> None:
+    """Save full SFT decoder weights and, when available, the HF model layout."""
+    module = trainer.module
+    assert module is not None
+    os.makedirs(output_dir, exist_ok=True)
+
+    decoder_state_path = os.path.join(output_dir, "decoder_state_dict.pt")
+    decoder = module.model.decoder
+    while hasattr(decoder, "_forward_module"):
+        decoder = decoder._forward_module
+    torch.save(decoder.state_dict(), decoder_state_path)
+    logger.info("[OK] Full SFT decoder state saved to %s", decoder_state_path)
+
+    model = module.model
+    while hasattr(model, "_forward_module"):
+        model = model._forward_module
+    if hasattr(model, "save_pretrained"):
+        model.save_pretrained(output_dir)
+        logger.info("[OK] Full SFT HuggingFace model saved to %s", output_dir)
+
+
 def save_adapter_flat(trainer: Any, output_dir: str) -> None:
     """Save adapter weights directly into *output_dir* (no nesting).
 
@@ -152,6 +173,10 @@ def save_adapter_flat(trainer: Any, output_dir: str) -> None:
     module = trainer.module
     assert module is not None
     os.makedirs(output_dir, exist_ok=True)
+
+    if getattr(trainer.training_config, "full_sft", False):
+        _save_full_sft_decoder(trainer, output_dir)
+        return
 
     if trainer.adapter_type == "lokr":
         if module.lycoris_net is None:
@@ -237,7 +262,8 @@ def save_checkpoint(
 def save_final(trainer: Any, output_dir: str) -> None:
     """Save final adapter weights (inference-ready, no training state)."""
     save_adapter_flat(trainer, output_dir)
-    verify_saved_adapter(output_dir)
+    if not getattr(trainer.training_config, "full_sft", False):
+        verify_saved_adapter(output_dir)
 
 
 def verify_saved_adapter(output_dir: str) -> None:
@@ -321,6 +347,49 @@ def resume_checkpoint(
             ckpt_dir.parent,
         )
         ckpt_dir = ckpt_dir.parent
+
+    if getattr(trainer.training_config, "full_sft", False):
+        decoder_state_path = ckpt_dir / "decoder_state_dict.pt"
+        state_path = ckpt_dir / "training_state.pt"
+        if not decoder_state_path.exists():
+            yield TrainingUpdate(
+                0,
+                0.0,
+                f"[WARN] No full SFT decoder checkpoint found in {ckpt_dir}",
+                kind="warn",
+            )
+            return None
+
+        state_dict = torch.load(
+            str(decoder_state_path),
+            map_location=module.device,
+            weights_only=True,
+        )
+        decoder = module.model.decoder
+        if hasattr(decoder, "_forward_module"):
+            decoder = decoder._forward_module
+        decoder.load_state_dict(state_dict, strict=False)
+
+        epoch = 0
+        step = 0
+        if state_path.exists():
+            state = torch.load(
+                str(state_path), map_location=module.device, weights_only=False
+            )
+            epoch = state.get("epoch", 0)
+            step = state.get("global_step", 0)
+            if "optimizer_state_dict" in state:
+                optimizer.load_state_dict(state["optimizer_state_dict"])
+            if "scheduler_state_dict" in state:
+                scheduler.load_state_dict(state["scheduler_state_dict"])
+
+        yield TrainingUpdate(
+            0,
+            0.0,
+            f"[OK] Resumed full SFT decoder from epoch {epoch}, step {step}",
+            kind="info",
+        )
+        return (epoch, step)
 
     # -- Detect format: LoKR uses lokr_weights.safetensors ---------------
     lokr_weights_path = ckpt_dir / "lokr_weights.safetensors"

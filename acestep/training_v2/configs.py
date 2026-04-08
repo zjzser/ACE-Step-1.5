@@ -155,6 +155,9 @@ class TrainingConfigV2(TrainingConfig):
     adapter_type: str = "lora"
     """Adapter type: 'lora' (PEFT) or 'lokr' (LyCORIS)."""
 
+    full_sft: bool = False
+    """Train all decoder parameters instead of LoRA/LoKR adapters."""
+
     # --- Model / paths ------------------------------------------------------
     model_variant: str = "turbo"
     """Model variant: 'turbo', 'base', or 'sft'."""
@@ -258,6 +261,7 @@ class TrainingConfigV2(TrainingConfig):
                 "offload_encoder": self.offload_encoder,
                 "vram_profile": self.vram_profile,
                 "adapter_type": self.adapter_type,
+                "full_sft": self.full_sft,
                 "cfg_ratio": self.cfg_ratio,
                 "timestep_mu": self.timestep_mu,
                 "timestep_sigma": self.timestep_sigma,

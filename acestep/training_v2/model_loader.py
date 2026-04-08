@@ -94,6 +94,56 @@ def _resolve_dtype(precision: str) -> torch.dtype:
     return mapping.get(precision, torch.bfloat16)
 
 
+def _load_training_model(
+    checkpoint_dir: str | Path,
+    variant: str,
+    device: str,
+    precision: str,
+) -> tuple[Any, torch.dtype]:
+    """Load the full model with the best supported attention implementation."""
+    from transformers import AutoModel
+
+    model_dir = _resolve_model_dir(checkpoint_dir, variant)
+    dtype = _resolve_dtype(precision)
+
+    logger.info(
+        "[INFO] Loading model from %s (variant=%s, dtype=%s)",
+        model_dir,
+        variant,
+        dtype,
+    )
+    print(f"[INFO] Loading model from {model_dir} (variant={variant}, dtype={dtype})")
+
+    attn_candidates = []
+    if _is_flash_attention_available(device):
+        attn_candidates.append("flash_attention_2")
+    attn_candidates.extend(["sdpa", "eager"])
+
+    model = None
+    last_err: Optional[Exception] = None
+
+    for attn_impl in attn_candidates:
+        try:
+            model = AutoModel.from_pretrained(
+                str(model_dir),
+                trust_remote_code=True,
+                attn_implementation=attn_impl,
+                dtype=dtype,
+            )
+            print(f"[OK] Model loaded with attn_implementation={attn_impl}")
+            break
+        except Exception as exc:
+            last_err = exc
+            logger.warning(
+                "[WARN] Failed with attn_implementation=%s: %s", attn_impl, exc
+            )
+
+    if model is None:
+        raise RuntimeError(f"Failed to load model from {model_dir}: {last_err}") from last_err
+
+    return model, dtype
+
+
 def read_model_config(checkpoint_dir: str | Path, variant: str) -> Dict[str, Any]:
     """Read and return the model ``config.json`` as a dict.
 
@@ -132,42 +182,7 @@ def load_decoder_for_training(
     Returns:
         The loaded ``AceStepConditionGenerationModel`` instance.
     """
-    from transformers import AutoModel
-
-    model_dir = _resolve_model_dir(checkpoint_dir, variant)
-    dtype = _resolve_dtype(precision)
-
-    logger.info("[INFO] Loading model from %s (variant=%s, dtype=%s)", model_dir, variant, dtype)
-    print(f"[INFO] Loading model from {model_dir} (variant={variant}, dtype={dtype})")
-
-    # Try attention implementations in preference order.
-    # flash_attention_2 first (matches handler.initialize_service), then sdpa, then eager.
-    attn_candidates = []
-    if _is_flash_attention_available(device):
-        attn_candidates.append("flash_attention_2")
-    attn_candidates.extend(["sdpa", "eager"])
-
-    model = None
-    last_err: Optional[Exception] = None
-
-    for attn_impl in attn_candidates:
-        try:
-            model = AutoModel.from_pretrained(
-                str(model_dir),
-                trust_remote_code=True,
-                attn_implementation=attn_impl,
-                dtype=dtype,
-            )
-            print(f"[OK] Model loaded with attn_implementation={attn_impl}")
-            break
-        except Exception as exc:
-            last_err = exc
-            logger.warning("[WARN] Failed with attn_implementation=%s: %s", attn_impl, exc)
-
-    if model is None:
-        raise RuntimeError(
-            f"Failed to load model from {model_dir}: {last_err}"
-        ) from last_err
+    model, dtype = _load_training_model(checkpoint_dir, variant, device, precision)
 
     # Freeze everything by default -- trainer will unfreeze LoRA params
     for param in model.parameters():
@@ -177,6 +192,34 @@ def load_decoder_for_training(
     model.eval()
 
     logger.info("[OK] Model on %s (%s), all params frozen", device, dtype)
+    return model
+
+def load_decoder_for_full_sft(
+    checkpoint_dir: str | Path,
+    variant: str = "turbo",
+    device: str = "cpu",
+    precision: str = "bf16",
+) -> Any:
+    """Load the decoder with trainable decoder parameters for full SFT."""
+    model, dtype = _load_training_model(checkpoint_dir, variant, device, precision)
+
+    for param in model.parameters():
+        param.requires_grad = False
+
+    if not hasattr(model, "decoder"):
+        raise AttributeError("Loaded model does not expose a decoder attribute")
+
+    for param in model.decoder.parameters():
+        param.requires_grad = True
+
+    model = model.to(device=device, dtype=dtype)
+    model.train()
+    model.decoder.train()
+
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"[OK] Full SFT mode: {trainable:,} / {total:,} params trainable")
+
     return model
 
 

@@ -22,7 +22,10 @@ import gc
 import sys
 
 from acestep.training_v2.cli.common import build_configs
-from acestep.training_v2.model_loader import load_decoder_for_training
+from acestep.training_v2.model_loader import (
+    load_decoder_for_full_sft,
+    load_decoder_for_training,
+)
 from acestep.training_v2.trainer_fixed import FixedLoRATrainer
 
 
@@ -81,7 +84,12 @@ def run_fixed(args: argparse.Namespace) -> int:
         # -- Load model -------------------------------------------------------
         try:
             show_info(f"Loading model (variant={train_cfg.model_variant}, device={train_cfg.device})")
-            model = load_decoder_for_training(
+            loader = (
+                load_decoder_for_full_sft
+                if train_cfg.full_sft
+                else load_decoder_for_training
+            )
+            model = loader(
                 checkpoint_dir=train_cfg.checkpoint_dir,
                 variant=train_cfg.model_variant,
                 device=train_cfg.device,

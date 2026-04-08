@@ -153,6 +153,7 @@ def build_configs(args: argparse.Namespace) -> Tuple[AdapterConfig, TrainingConf
         persistent_workers=persistent_workers,
         # V2 extensions
         adapter_type=adapter_type,
+        full_sft=getattr(args, "full_sft", False),
         optimizer_type=getattr(args, "optimizer_type", "adamw"),
         scheduler_type=getattr(args, "scheduler_type", "cosine"),
         gradient_checkpointing=getattr(args, "gradient_checkpointing", True),

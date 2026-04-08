@@ -231,6 +231,12 @@ def _add_common_training_args(parser: argparse.ArgumentParser) -> None:
     g_train.add_argument("--scheduler-type", type=str, default="cosine", choices=["cosine", "cosine_restarts", "linear", "constant", "constant_with_warmup"], help="LR scheduler (default: cosine)")
     g_train.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True, help="Recompute activations to save VRAM (~40-60%% less, ~10-30%% slower). On by default; use --no-gradient-checkpointing to disable")
     g_train.add_argument("--offload-encoder", action=argparse.BooleanOptionalAction, default=False, help="Move encoder/VAE to CPU after setup (saves ~2-4GB VRAM)")
+    g_train.add_argument(
+        "--full-sft",
+        action="store_true",
+        default=False,
+        help="Train all decoder parameters instead of LoRA/LoKR adapters",
+    )
 
     # -- Adapter selection ---------------------------------------------------
     g_adapter = parser.add_argument_group("Adapter")
