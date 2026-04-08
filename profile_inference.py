@@ -2191,5 +2191,7 @@ def main():
     print("=" * 100)
 
 
-if __name__ == "__main__":
-    main()
+#if __name__ == "__main__":
+#    main()
+
+报错
