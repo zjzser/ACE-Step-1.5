@@ -693,7 +693,8 @@ class InitServiceMixinTests(unittest.TestCase):
                 with host._load_model_context("vae"):
                     pass
         self.assertEqual(move_mock.call_count, 2)
-        empty_cache.assert_called_once()
+        # _release_system_memory is called after both load and offload
+        self.assertEqual(empty_cache.call_count, 2)
 
     def test_recursive_to_device_uses_quantized_move_fallback(self):
         """It routes parameters through quantized move fallback after to() failure."""

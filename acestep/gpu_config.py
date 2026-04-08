@@ -13,6 +13,7 @@ Centralized GPU memory detection and adaptive configuration management
 """
 
 import os
+import re
 import sys
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
@@ -23,6 +24,7 @@ from loguru import logger
 DEBUG_MAX_CUDA_VRAM_ENV = "MAX_CUDA_VRAM"
 DEBUG_MAX_MPS_VRAM_ENV = "MAX_MPS_VRAM"
 DEBUG_MAX_XPU_VRAM_ENV = "MAX_XPU_VRAM"
+SAVE_MEMORY_ENV = "ACESTEP_SAVE_MEMORY"
 
 # Tolerance for 16GB detection: reported VRAM like 15.5GB is effectively 16GB hardware
 # Real-world 16GB GPUs often report 15.7-15.9GB due to system/driver reservations
@@ -146,6 +148,8 @@ def is_legacy_cuda_gpu(device_index: int = 0) -> bool:
 MODEL_VRAM = {
     "dit_turbo": 4.7,  # DiT turbo model weights (bf16)
     "dit_base": 4.7,  # DiT base model weights (bf16)
+    "dit_xl_turbo": 9.0,  # DiT XL (4B) turbo model weights (bf16)
+    "dit_xl_base": 9.0,  # DiT XL (4B) base model weights (bf16)
     "vae": 0.33,  # VAE (AutoencoderOobleck) weights (fp16)
     "text_encoder": 1.2,  # Qwen3-Embedding-0.6B text encoder (bf16)
     "silence_latent": 0.01,  # Silence latent tensor
@@ -169,10 +173,48 @@ LM_VRAM = {
 DIT_INFERENCE_VRAM_PER_BATCH = {
     "turbo": 0.3,  # GB per batch item (no CFG)
     "base": 0.6,  # GB per batch item (with CFG, 2x forward)
+    "xl_turbo": 0.5,  # GB per batch item, XL (4B) no CFG, larger activations
+    "xl_base": 1.0,  # GB per batch item, XL (4B) with CFG, 2x forward
 }
 
 # Safety margin to keep free for OS/driver/fragmentation (GB)
 VRAM_SAFETY_MARGIN_GB = 0.5
+
+
+def _has_path_token(token: str, path: str) -> bool:
+    """Check if *token* appears as a delimited word in *path*.
+
+    Matches when *token* is bounded by start/end of string or a common
+    path delimiter (``/``, ``\\``, ``.``, ``_``, ``-``).
+    """
+    return re.search(rf"(^|[\\/._-]){token}($|[\\/._-])", path) is not None
+
+
+def get_dit_type_from_path(config_path: str) -> str:
+    """Derive the DiT type key from a model checkpoint path.
+
+    Returns a string suitable for looking up ``MODEL_VRAM`` (prefixed with
+    ``"dit_"``) and ``DIT_INFERENCE_VRAM_PER_BATCH``.
+
+    Examples::
+
+        "acestep-v15-xl-turbo"  -> "xl_turbo"
+        "acestep-v15-xl-base"   -> "xl_base"
+        "acestep-v15-xl-sft"    -> "xl_base"   (sft shares base VRAM profile)
+        "acestep-v15-turbo"     -> "turbo"
+        "acestep-v15-base"      -> "base"
+        "acestep-v15-sft"       -> "base"       (sft shares base VRAM profile)
+    """
+    path = (config_path or "").lower()
+    is_xl = _has_path_token("xl", path)
+
+    if _has_path_token("turbo", path):
+        variant = "turbo"
+    else:
+        # Both "base" and "sft" use the base VRAM profile (CFG doubles forward)
+        variant = "base"
+
+    return f"xl_{variant}" if is_xl else variant
 
 
 @dataclass
@@ -214,6 +256,18 @@ class GPUConfig:
 
     # LM memory allocation (GB) for each model size
     lm_memory_gb: Dict[str, float]  # e.g., {"0.6B": 3, "1.7B": 8, "4B": 12}
+
+    # Save-memory mode: skip storing intermediate tensors in extra_outputs
+    # and disable auto_lrc / auto_score to reduce RAM usage.
+    # Controlled via ACESTEP_SAVE_MEMORY=1 environment variable.
+    save_memory_mode: bool = False
+
+    # MLX VAE decode chunk size (Apple Silicon only).
+    # Controls the maximum number of latent frames decoded in a single pass.
+    # Larger values decode faster but use more memory.
+    # Auto-detected based on available unified memory; overridable via
+    # ACESTEP_MLX_VAE_CHUNK environment variable.
+    mlx_vae_chunk_size: int = 512
 
 
 def _apply_lm_backend_compatibility_overrides(config: GPUConfig) -> GPUConfig:
@@ -722,6 +776,40 @@ def get_gpu_tier(gpu_memory_gb: float) -> str:
         return "unlimited"
 
 
+def _auto_mlx_vae_chunk_size(mem_gb: Optional[float] = None) -> int:
+    """Select MLX VAE decode chunk size based on available unified memory.
+
+    The ``ACESTEP_MLX_VAE_CHUNK`` environment variable takes highest
+    priority.  Otherwise the chunk size is chosen from a memory-based
+    heuristic targeting Apple Silicon unified-memory configurations.
+
+    Args:
+        mem_gb: GPU/unified memory in GB.  When ``None``, auto-detected
+            via :func:`get_gpu_memory_gb`.
+
+    Returns:
+        Chunk size as a positive integer (minimum 192, to keep
+        ``stride = chunk - 2 * overlap`` positive with overlap=64).
+    """
+    env_val = os.environ.get("ACESTEP_MLX_VAE_CHUNK")
+    if env_val is not None:
+        try:
+            return max(192, int(env_val))
+        except ValueError:
+            pass
+    if mem_gb is None:
+        mem_gb = get_gpu_memory_gb()
+    if mem_gb <= 16:
+        size = 256
+    elif mem_gb <= 36:
+        size = 512
+    elif mem_gb <= 64:
+        size = 1024
+    else:
+        size = 2048
+    return max(192, size)
+
+
 def get_gpu_config(gpu_memory_gb: Optional[float] = None) -> GPUConfig:
     """
     Get GPU configuration based on detected or provided GPU memory.
@@ -795,6 +883,10 @@ def get_gpu_config(gpu_memory_gb: Optional[float] = None) -> GPUConfig:
         if _mps
         else config.get("compile_model_default", True),
         lm_memory_gb=config["lm_memory_gb"],
+        # MPS: auto-tune MLX VAE decode chunk size based on unified memory
+        mlx_vae_chunk_size=_auto_mlx_vae_chunk_size(gpu_memory_gb)
+        if _mps
+        else 512,
     )
     return _apply_lm_backend_compatibility_overrides(config)
 
@@ -984,7 +1076,8 @@ def compute_adaptive_config(total_vram_gb: float, dit_type: str = "turbo") -> GP
 
     Args:
         total_vram_gb: Total GPU VRAM in GB
-        dit_type: "turbo" or "base" (affects inference VRAM due to CFG)
+        dit_type: DiT type key -- "turbo", "base", "xl_turbo", "xl_base", etc.
+                  (affects model weight size and inference VRAM due to CFG)
 
     Returns:
         GPUConfig with parameters that fit within the VRAM budget
@@ -1190,7 +1283,7 @@ def estimate_inference_vram(
     Args:
         batch_size: Number of samples to generate
         duration_s: Audio duration in seconds
-        dit_type: "turbo" or "base"
+        dit_type: DiT type key -- "turbo", "base", "xl_turbo", "xl_base", etc.
         with_lm: Whether LM is loaded
         lm_size: LM model size if with_lm is True
 
@@ -1455,6 +1548,9 @@ def get_gpu_config_for_tier(tier: str) -> GPUConfig:
         if _mps
         else config.get("compile_model_default", True),
         lm_memory_gb=config["lm_memory_gb"],
+        mlx_vae_chunk_size=_auto_mlx_vae_chunk_size(real_gpu_memory)
+        if _mps
+        else 512,
     )
     return _apply_lm_backend_compatibility_overrides(config)
 
@@ -1464,10 +1560,18 @@ _global_gpu_config: Optional[GPUConfig] = None
 
 
 def get_global_gpu_config() -> GPUConfig:
-    """Get the global GPU configuration, initializing if necessary."""
+    """Get the global GPU configuration, initializing if necessary.
+
+    Respects the ``ACESTEP_SAVE_MEMORY`` environment variable: when set to
+    ``"1"`` or ``"true"``, ``save_memory_mode`` is enabled regardless of tier.
+    """
     global _global_gpu_config
     if _global_gpu_config is None:
         _global_gpu_config = get_gpu_config()
+        env_val = os.environ.get(SAVE_MEMORY_ENV, "").strip().lower()
+        if env_val in ("1", "true", "yes"):
+            _global_gpu_config.save_memory_mode = True
+            logger.info("[gpu_config] Save-memory mode enabled via {}={}".format(SAVE_MEMORY_ENV, env_val))
     return _global_gpu_config
 
 

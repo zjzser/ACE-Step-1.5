@@ -18,6 +18,7 @@ from acestep.core.generation.handler.repaint_waveform_splice import (
 from acestep.gpu_config import (
     DIT_INFERENCE_VRAM_PER_BATCH,
     VRAM_SAFETY_MARGIN_GB,
+    get_dit_type_from_path,
     get_effective_free_vram_gb,
 )
 
@@ -54,6 +55,53 @@ class GenerateMusicMixin:
     orchestration flow.
     """
 
+    def _verify_decoder_device_dtype(self) -> None:
+        """Ensure all decoder parameters are on ``self.device`` and ``self.dtype``.
+
+        CPU-offload round-trips can leave PEFT/LoRA adapter weights on the
+        wrong device or in the wrong dtype, which silently produces NaN/Inf
+        during the diffusion forward pass.  This method detects and fixes
+        such mismatches before generation begins.
+        """
+        decoder = getattr(self.model, "decoder", None)
+        if decoder is None:
+            return
+
+        wrong_device = []
+        wrong_dtype = []
+        for name, param in decoder.named_parameters():
+            if not self._is_on_target_device(param, self.device):
+                wrong_device.append(name)
+            if param.is_floating_point() and param.dtype != self.dtype:
+                wrong_dtype.append(name)
+
+        if wrong_device or wrong_dtype:
+            if wrong_device:
+                logger.warning(
+                    f"[generate_music] LoRA sanity check: {len(wrong_device)} decoder "
+                    f"parameters on wrong device (expected {self.device}), fixing: "
+                    f"{wrong_device[:5]}{'...' if len(wrong_device) > 5 else ''}"
+                )
+            if wrong_dtype:
+                logger.warning(
+                    f"[generate_music] LoRA sanity check: {len(wrong_dtype)} decoder "
+                    f"parameters have wrong dtype (expected {self.dtype}), fixing: "
+                    f"{wrong_dtype[:5]}{'...' if len(wrong_dtype) > 5 else ''}"
+                )
+            decoder.to(device=self.device, dtype=self.dtype)
+
+        # Final verification — use recursive move if simple .to() wasn't enough
+        still_wrong = [
+            name for name, p in decoder.named_parameters()
+            if not self._is_on_target_device(p, self.device)
+        ]
+        if still_wrong:
+            logger.warning(
+                f"[generate_music] {len(still_wrong)} params still on wrong device "
+                f"after decoder.to(), using recursive move"
+            )
+            self._recursive_to_device(decoder, self.device, self.dtype)
+
     def _vram_preflight_check(
         self,
         actual_batch_size: int,
@@ -88,8 +136,17 @@ class GenerateMusicMixin:
             return None
 
         duration_s = audio_duration or 60.0
+        # Determine actual model size (XL vs standard) and CFG mode.
+        config_path = ""
+        if getattr(self, "last_init_params", None):
+            config_path = self.last_init_params.get("config_path", "")
+        dit_type = get_dit_type_from_path(config_path)
+        is_xl = dit_type.startswith("xl_")
         # CFG doubles forward-pass memory: two DiT evaluations per step.
-        dit_key = "base" if guidance_scale > 1.0 else "turbo"
+        if guidance_scale > 1.0:
+            dit_key = "xl_base" if is_xl else "base"
+        else:
+            dit_key = "xl_turbo" if is_xl else "turbo"
         per_batch_gb = DIT_INFERENCE_VRAM_PER_BATCH.get(dit_key, 0.6)
         # Longer audio = more latent frames (5 Hz rate) = more memory.
         duration_factor = max(1.0, duration_s / 60.0)
@@ -149,6 +206,9 @@ class GenerateMusicMixin:
         cfg_interval_end: float = 1.0,
         shift: float = 1.0,
         infer_method: str = "ode",
+        sampler_mode: str = "euler",
+        velocity_norm_threshold: float = 0.0,
+        velocity_ema_factor: float = 0.0,
         use_tiled_decode: bool = True,
         timesteps: Optional[List[float]] = None,
         latent_shift: float = 0.0,
@@ -207,6 +267,14 @@ class GenerateMusicMixin:
             )
             guidance_scale = 1.0
 
+        # When LoRA is active, verify all decoder parameters are on the
+        # expected device and dtype.  CPU-offload round-trips can leave PEFT
+        # adapter weights on the wrong device, causing NaN in the diffusion
+        # forward pass.  The check is cheap and prevents a hard-to-debug
+        # generation failure.
+        if getattr(self, "lora_loaded", False) and getattr(self, "use_lora", False):
+            self._verify_decoder_device_dtype()
+
         logger.info("[generate_music] Starting generation...")
         if progress:
             progress(0.51, desc="Preparing inputs...")
@@ -235,6 +303,12 @@ class GenerateMusicMixin:
             )
             if audio_error is not None:
                 return audio_error
+
+            # Cover/repaint/lego/extract: lock duration to source audio.
+            if processed_src_audio is not None and task_type in (
+                "cover", "repaint", "lego", "extract",
+            ):
+                audio_duration = processed_src_audio.shape[-1] / self.sample_rate
 
             service_inputs = self._prepare_generate_music_service_inputs(
                 actual_batch_size=actual_batch_size,
@@ -283,6 +357,9 @@ class GenerateMusicMixin:
                 cfg_interval_end=cfg_interval_end,
                 shift=shift,
                 infer_method=infer_method,
+                sampler_mode=sampler_mode,
+                velocity_norm_threshold=velocity_norm_threshold,
+                velocity_ema_factor=velocity_ema_factor,
                 repaint_crossfade_frames=resolved_cf_frames,
                 repaint_injection_ratio=injection_ratio,
             )

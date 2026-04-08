@@ -208,7 +208,8 @@ async def list_models(request: Request, _: None = Depends(verify_api_key)):
     models = []
     if dit_handler and dit_handler.model is not None:
         # Get current loaded model name
-        config_path = getattr(dit_handler, 'config_path', '') or ''
+        _params = getattr(dit_handler, 'last_init_params', None) or {}
+        config_path = _params.get('config_path', '')
         model_name = os.path.basename(config_path.rstrip("/\\")) if config_path else "unknown"
         models.append({
             "name": model_name,
@@ -525,6 +526,8 @@ async def release_task(request: Request, authorization: Optional[str] = Header(N
             use_random_seed=use_random_seed,
             seeds=resolved_seeds,
             audio_format=get_param("audio_format", default="flac"),
+            mp3_bitrate=get_param("mp3_bitrate", default="128k"),
+            mp3_sample_rate=get_param("mp3_sample_rate", default=48000),
         )
 
         # Get output directory
@@ -564,8 +567,8 @@ async def release_task(request: Request, authorization: Optional[str] = Header(N
                 "seed": audio_params.get("seed"),
                 "caption": audio_params.get("cot_caption") or audio_params.get("caption", ""),
                 "lyrics": audio_params.get("cot_lyrics") or audio_params.get("lyrics", ""),
-                "bpm": audio_params.get("cot_bpm") or audio_params.get("bpm"),
-                "duration": audio_params.get("cot_duration") or audio_params.get("duration"),
+                "bpm": (audio_params.get("cot_bpm") if audio_params.get("cot_bpm") and audio_params.get("cot_bpm") > 0 else None) or (audio_params.get("bpm") if audio_params.get("bpm") and audio_params.get("bpm") > 0 else None),
+                "duration": (audio_params.get("cot_duration") if audio_params.get("cot_duration") and audio_params.get("cot_duration") > 0 else None) or (audio_params.get("duration") if audio_params.get("duration") and audio_params.get("duration") > 0 else None),
                 "keyscale": audio_params.get("cot_keyscale") or audio_params.get("keyscale", ""),
                 "timesignature": audio_params.get("cot_timesignature") or audio_params.get("timesignature", ""),
                 "vocal_language": audio_params.get("cot_vocal_language") or audio_params.get("vocal_language", ""),

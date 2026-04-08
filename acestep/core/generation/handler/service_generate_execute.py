@@ -77,6 +77,9 @@ class ServiceGenerateExecuteMixin:
         timesteps: Optional[List[float]],
         repaint_crossfade_frames: int = 10,
         repaint_injection_ratio: float = 0.5,
+        sampler_mode: str = "euler",
+        velocity_norm_threshold: float = 0.0,
+        velocity_ema_factor: float = 0.0,
     ) -> Dict[str, Any]:
         """Build kwargs passed to model generation backends."""
         repaint_mask = payload.get("repaint_mask")
@@ -101,7 +104,7 @@ class ServiceGenerateExecuteMixin:
             "cover_noise_strength": cover_noise_strength,
             "infer_method": infer_method,
             "infer_steps": infer_steps,
-            "diffusion_guidance_sale": guidance_scale,
+            "diffusion_guidance_scale": guidance_scale,
             "use_adg": use_adg,
             "cfg_interval_start": cfg_interval_start,
             "cfg_interval_end": cfg_interval_end,
@@ -110,6 +113,9 @@ class ServiceGenerateExecuteMixin:
             "clean_src_latents": clean_src_latents,
             "repaint_crossfade_frames": repaint_crossfade_frames,
             "repaint_injection_ratio": repaint_injection_ratio,
+            "sampler_mode": sampler_mode,
+            "velocity_norm_threshold": velocity_norm_threshold,
+            "velocity_ema_factor": velocity_ema_factor,
         }
         if timesteps is not None:
             kwargs["timesteps"] = torch.tensor(timesteps, dtype=torch.float32, device=self.device)
@@ -189,7 +195,7 @@ class ServiceGenerateExecuteMixin:
                             shift=shift,
                             timesteps=generate_kwargs.get("timesteps"),
                             infer_steps=generate_kwargs.get("infer_steps"),
-                            guidance_scale=generate_kwargs.get("diffusion_guidance_sale", 1.0),
+                            guidance_scale=generate_kwargs.get("diffusion_guidance_scale", 1.0),
                             null_condition_emb=null_cond_emb,
                             cfg_interval_start=generate_kwargs.get("cfg_interval_start", 0.0),
                             cfg_interval_end=generate_kwargs.get("cfg_interval_end", 1.0),
@@ -197,15 +203,18 @@ class ServiceGenerateExecuteMixin:
                             encoder_hidden_states_non_cover=enc_hs_nc,
                             encoder_attention_mask_non_cover=enc_am_nc,
                             context_latents_non_cover=ctx_nc,
+                            sampler_mode=generate_kwargs.get("sampler_mode", "euler"),
+                            velocity_norm_threshold=generate_kwargs.get("velocity_norm_threshold", 0.0),
+                            velocity_ema_factor=generate_kwargs.get("velocity_ema_factor", 0.0),
                         )
                         _tc = outputs.get("time_costs", {})
                         logger.info(
-                            "[service_generate] DiT diffusion complete via MLX (%.2fs total, %.3fs/step).",
+                            "[service_generate] DiT diffusion complete via MLX ({:.2f}s total, {:.3f}s/step).",
                             _tc.get("diffusion_time_cost", 0),
                             _tc.get("diffusion_per_step_time_cost", 0),
                         )
                     except Exception as exc:
-                        logger.warning("[service_generate] MLX diffusion failed (%s); falling back to PyTorch.", exc)
+                        logger.warning("[service_generate] MLX diffusion failed ({}); falling back to PyTorch.", exc)
                         outputs = self.model.generate_audio(**generate_kwargs)
                 else:
                     logger.info("[service_generate] DiT diffusion via PyTorch ({})...", self.device)

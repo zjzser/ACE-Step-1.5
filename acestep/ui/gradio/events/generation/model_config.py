@@ -79,6 +79,18 @@ def is_sft_model(config_path_lower: str) -> bool:
     return _has_token("sft", config_path_lower) and not _has_token("turbo", config_path_lower)
 
 
+def is_xl_model(config_path_lower: str) -> bool:
+    """Check whether a model path refers to an XL (4B DiT) variant.
+
+    Args:
+        config_path_lower: Lowercased model config path string.
+
+    Returns:
+        ``True`` when the path contains ``"xl"`` as a delimited token.
+    """
+    return _has_token("xl", config_path_lower)
+
+
 def get_ui_control_config(is_turbo: bool, is_pure_base: bool = False, is_sft: bool = False) -> dict:
     """Return UI control configuration (values, limits, visibility) for model type.
 

@@ -4,6 +4,7 @@ from typing import Any
 
 import gradio as gr
 
+from acestep.gpu_config import get_global_gpu_config, is_mps_platform
 from acestep.ui.gradio.help_content import create_help_button
 from acestep.ui.gradio.i18n import t
 
@@ -45,6 +46,32 @@ def build_dit_controls(ui_config: dict[str, Any]) -> dict[str, Any]:
                 value="ode",
                 label=t("generation.infer_method_label"),
                 info=t("generation.infer_method_info"),
+                elem_classes=["has-info-container"],
+            )
+            sampler_mode = gr.Dropdown(
+                choices=["euler", "heun"],
+                value="euler",
+                label=t("generation.sampler_mode_label"),
+                info=t("generation.sampler_mode_info"),
+                elem_classes=["has-info-container"],
+            )
+        with gr.Row():
+            velocity_norm_threshold = gr.Slider(
+                minimum=0.0,
+                maximum=5.0,
+                value=0.0,
+                step=0.1,
+                label=t("generation.velocity_norm_threshold_label"),
+                info=t("generation.velocity_norm_threshold_info"),
+                elem_classes=["has-info-container"],
+            )
+            velocity_ema_factor = gr.Slider(
+                minimum=0.0,
+                maximum=0.5,
+                value=0.0,
+                step=0.01,
+                label=t("generation.velocity_ema_factor_label"),
+                info=t("generation.velocity_ema_factor_info"),
                 elem_classes=["has-info-container"],
             )
         with gr.Row():
@@ -108,10 +135,25 @@ def build_dit_controls(ui_config: dict[str, Any]) -> dict[str, Any]:
                     info=t("generation.random_seed_info"),
                     elem_classes=["has-info-container"],
                 )
+        _gpu_config = get_global_gpu_config()
+        _show_mlx_chunk = is_mps_platform()
+        with gr.Row(visible=_show_mlx_chunk):
+            mlx_vae_chunk_size = gr.Slider(
+                minimum=192,
+                maximum=2048,
+                value=_gpu_config.mlx_vae_chunk_size,
+                step=64,
+                label="MLX VAE Chunk Size",
+                info="Larger = faster decode but more memory. Auto-detected based on your system.",
+                elem_classes=["has-info-container"],
+            )
     return {
         "inference_steps": inference_steps,
         "guidance_scale": guidance_scale,
         "infer_method": infer_method,
+        "sampler_mode": sampler_mode,
+        "velocity_norm_threshold": velocity_norm_threshold,
+        "velocity_ema_factor": velocity_ema_factor,
         "use_adg": use_adg,
         "shift": shift,
         "custom_timesteps": custom_timesteps,
@@ -119,4 +161,5 @@ def build_dit_controls(ui_config: dict[str, Any]) -> dict[str, Any]:
         "cfg_interval_end": cfg_interval_end,
         "seed": seed,
         "random_seed_checkbox": random_seed_checkbox,
+        "mlx_vae_chunk_size": mlx_vae_chunk_size,
     }

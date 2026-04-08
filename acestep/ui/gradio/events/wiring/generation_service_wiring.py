@@ -149,6 +149,12 @@ def register_generation_service_handlers(
         outputs=[generation_section["lora_status"]],
     )
 
+    # ========== MLX VAE Chunk Size ==========
+    generation_section["mlx_vae_chunk_size"].change(
+        fn=lambda val: setattr(dit_handler, "mlx_vae_chunk_size", int(val)),
+        inputs=[generation_section["mlx_vae_chunk_size"]],
+    )
+
     # ========== Auto Checkbox Handlers ==========
     auto_field_map = {
         "bpm_auto": ("bpm", "bpm"),

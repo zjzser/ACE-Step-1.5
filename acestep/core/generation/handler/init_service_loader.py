@@ -191,6 +191,7 @@ class InitServiceLoaderMixin(InitServiceLoaderComponentsMixin):
 
         self.model.config._attn_implementation = attn_implementation
         self.config = self.model.config
+        self._sync_alignment_config()
         self._apply_cuda_bool_argsort_workaround()
 
         if not self.offload_to_cpu:

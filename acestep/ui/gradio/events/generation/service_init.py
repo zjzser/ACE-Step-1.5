@@ -15,7 +15,7 @@ from acestep.gpu_config import (
     get_gpu_config_for_tier, set_global_gpu_config, GPU_TIER_LABELS, GPU_TIER_CONFIGS,
     resolve_lm_backend,
 )
-from .model_config import is_pure_base_model, is_sft_model, get_model_type_ui_settings
+from .model_config import is_pure_base_model, is_sft_model, is_xl_model, get_model_type_ui_settings
 
 
 def _select_quantization_value(
@@ -161,6 +161,15 @@ def init_service_wrapper(
     )
 
     gpu_config = get_global_gpu_config()
+
+    # Warn if XL (4B) model selected on a GPU with limited VRAM
+    if is_xl_model(config_path_lower) and gpu_config is not None:
+        gpu_mem = getattr(gpu_config, "gpu_memory_gb", 0)
+        if 0 < gpu_mem < 16:
+            gr.Warning(
+                f"XL (4B) model requires ≥16GB VRAM (detected {gpu_mem:.0f}GB). "
+                "Consider using a 2B model, or enable CPU offload."
+            )
     lm_actually_initialized = llm_handler.llm_initialized if llm_handler else False
     max_duration = gpu_config.max_duration_with_lm if lm_actually_initialized else gpu_config.max_duration_without_lm
     max_batch = gpu_config.max_batch_size_with_lm if lm_actually_initialized else gpu_config.max_batch_size_without_lm
