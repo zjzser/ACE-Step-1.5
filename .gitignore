@@ -258,7 +258,6 @@ docs/.vitepress/dist/
 docs/.vitepress/cache/
 docs/en/awesome.md
 package-lock.json
-muse-sft-test/Muse-JSONL-2-ACE-Step.py
 muse-sft-test/ACE-Step-style/suno_en_000210_1.json
 muse-sft-test/ACE-Step-style/suno_en_000210_1.lyrics.txt
 muse-sft-test/ACE-Step-style/suno_en_000218_1.json
