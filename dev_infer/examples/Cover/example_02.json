@@ -1,0 +1,7 @@
+{
+  "src_audio": "/path/to/source_song.wav",
+  "caption": "Turn the source into an acoustic folk version with fingerpicked guitar and intimate vocal phrasing.",
+  "audio_cover_strength": 0.7,
+  "duration": 50,
+  "thinking": false
+}

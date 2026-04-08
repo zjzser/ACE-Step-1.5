@@ -1,0 +1,11 @@
+{
+  "baseline": "base",
+  "task": "repaint",
+  "config_path": "acestep-v15-sft",
+  "src_audio": "/path/to/source_song.wav",
+  "caption": "Replace this section with a smooth piano bridge that gently lowers the energy.",
+  "repainting_start": 12.0,
+  "repainting_end": 20.0,
+  "duration": 45,
+  "thinking": false
+}

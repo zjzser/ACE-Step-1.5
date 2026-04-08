@@ -1,0 +1,2 @@
+✅ LM chunk 1: phase1_time: 2.01s, phase2_time: 5.10s, total_time: 7.12s
+Generation completed successfully!

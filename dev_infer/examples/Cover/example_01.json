@@ -1,0 +1,10 @@
+{
+  "src_audio": "/path/to/source_song.wav",
+  "caption": "Convert the source into a soft jazz trio cover with brushed drums and warm upright bass.",
+  "lyrics": "[Instrumental]",
+  "audio_cover_strength": 0.8,
+  "duration": 45,
+  "thinking": false
+}
+
+

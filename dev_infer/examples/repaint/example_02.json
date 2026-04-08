@@ -1,0 +1,11 @@
+{
+  "baseline": "base",
+  "task": "repaint",
+  "config_path": "acestep-v15-sft",
+  "src_audio": "/path/to/source_song.wav",
+  "caption": "Regenerate the chorus area with a bigger hook, layered vocals, and stronger drums.",
+  "repainting_start": 30.0,
+  "repainting_end": 45.0,
+  "duration": 60,
+  "thinking": false
+}

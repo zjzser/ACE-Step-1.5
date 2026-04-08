@@ -1,0 +1,11 @@
+{
+  "baseline": "base",
+  "task": "repaint",
+  "config_path": "acestep-v15-sft",
+  "src_audio": "/path/to/source_song.wav",
+  "caption": "Insert an ambient breakdown with soft pads, reversed textures, and reduced percussion.",
+  "repainting_start": 18.0,
+  "repainting_end": 28.0,
+  "duration": 50,
+  "thinking": false
+}

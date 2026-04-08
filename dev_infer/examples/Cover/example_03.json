@@ -1,0 +1,7 @@
+{
+  "src_audio": "/path/to/source_song.wav",
+  "caption": "Restyle the source as retro synthwave with gated snare, analog bass, and neon-night textures.",
+  "audio_cover_strength": 0.65,
+  "duration": 40,
+  "thinking": false
+}
