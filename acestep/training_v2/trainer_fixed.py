@@ -26,6 +26,13 @@ from typing import Any, Dict, Generator, Optional, Tuple
 import torch
 import torch.nn as nn
 from acestep.training_v2.optim import build_optimizer, build_scheduler
+from acestep.training_v2.tensorboard_preview import (
+    build_sample_preview,
+    build_spectrogram_image,
+    extract_first_audio_path,
+    load_audio_preview,
+    should_log_sample_preview,
+)
 from acestep.training.data_module import PreprocessedDataModule
 
 # V2 modules
@@ -429,8 +436,11 @@ class FixedLoRATrainer:
             epoch_loss = 0.0
             num_updates = 0
             epoch_start = time.time()
+            preview_text: Optional[str] = None
 
             for _batch_idx, batch in enumerate(train_loader):
+                if preview_text is None:
+                    preview_text = build_sample_preview(batch, epoch=epoch)
                 # Stop signal
                 if training_state and training_state.get("should_stop", False):
                     _stop_loss = (
@@ -531,6 +541,23 @@ class FixedLoRATrainer:
             avg_epoch_loss = epoch_loss / max(num_updates, 1)
             if is_main:
                 tb.log_epoch_loss(avg_epoch_loss, epoch + 1)
+                if preview_text is not None and (
+                    epoch == start_epoch
+                    or should_log_sample_preview(cfg.sample_every_n_epochs, epoch)
+                ):
+                    tb.log_text("train/sample_cases", preview_text, global_step)
+                    audio_path = extract_first_audio_path(batch)
+                    if audio_path:
+                        try:
+                            waveform, sample_rate = load_audio_preview(audio_path)
+                            tb.log_audio("train/sample_audio", waveform, global_step, sample_rate)
+                            tb.log_image(
+                                "train/sample_spectrogram",
+                                build_spectrogram_image(waveform),
+                                global_step,
+                            )
+                        except Exception as exc:
+                            logger.warning("Failed to log TensorBoard audio preview: %s", exc)
                 yield TrainingUpdate(
                     step=global_step, loss=avg_epoch_loss,
                     msg=f"[OK] Epoch {epoch + 1}/{cfg.max_epochs} in {epoch_time:.1f}s, Loss: {avg_epoch_loss:.4f}",

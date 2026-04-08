@@ -63,6 +63,21 @@ class TrainingLogger:
         if self._writer is not None:
             self._writer.add_scalar(tag, value, global_step=step)
 
+    def log_text(self, tag: str, text: str, step: int) -> None:
+        """Log a text panel entry."""
+        if self._writer is not None:
+            self._writer.add_text(tag, text, global_step=step)
+
+    def log_audio(self, tag: str, waveform: torch.Tensor, step: int, sample_rate: int) -> None:
+        """Log an audio clip."""
+        if self._writer is not None:
+            self._writer.add_audio(tag, waveform, global_step=step, sample_rate=sample_rate)
+
+    def log_image(self, tag: str, image: torch.Tensor, step: int) -> None:
+        """Log an image tensor."""
+        if self._writer is not None:
+            self._writer.add_image(tag, image, global_step=step)
+
     def log_loss(self, loss: float, step: int) -> None:
         self.log_scalar("train/loss", loss, step)
 
