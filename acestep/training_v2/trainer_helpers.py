@@ -378,10 +378,24 @@ def resume_checkpoint(
             )
             epoch = state.get("epoch", 0)
             step = state.get("global_step", 0)
-            if "optimizer_state_dict" in state:
-                optimizer.load_state_dict(state["optimizer_state_dict"])
-            if "scheduler_state_dict" in state:
-                scheduler.load_state_dict(state["scheduler_state_dict"])
+
+        resume_info = (
+            "[INFO] Full SFT resume restores decoder weights and training progress only; "
+            "DeepSpeed optimizer/scheduler state is intentionally skipped for portability."
+        )
+        logger.info(resume_info)
+        yield TrainingUpdate(0, 0.0, resume_info, kind="info")
+
+        if step > 0:
+            try:
+                scheduler.step(step)
+            except Exception as exc:
+                sched_warn = (
+                    "[WARN] Could not align scheduler to restored global_step "
+                    f"{step}: {exc}"
+                )
+                logger.warning(sched_warn)
+                yield TrainingUpdate(0, 0.0, sched_warn, kind="warn")
 
         yield TrainingUpdate(
             0,

@@ -214,6 +214,12 @@ def _add_common_training_args(parser: argparse.ArgumentParser) -> None:
         default=_DEFAULT_NUM_WORKERS > 0,
         help="Keep workers alive between epochs (default: True; False on Windows)",
     )
+    g_data.add_argument(
+        "--val-split",
+        type=float,
+        default=0.0,
+        help="Validation split ratio for preview/evaluation holdout (default: 0.0)",
+    )
 
     # -- Training hyperparams ------------------------------------------------
     g_train = parser.add_argument_group("Training")

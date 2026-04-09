@@ -151,6 +151,7 @@ def build_configs(args: argparse.Namespace) -> Tuple[AdapterConfig, TrainingConf
         pin_memory=args.pin_memory,
         prefetch_factor=prefetch_factor,
         persistent_workers=persistent_workers,
+        val_split=getattr(args, "val_split", 0.0),
         # V2 extensions
         adapter_type=adapter_type,
         full_sft=getattr(args, "full_sft", False),

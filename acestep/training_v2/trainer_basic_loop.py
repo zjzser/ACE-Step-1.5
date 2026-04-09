@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
@@ -20,13 +21,17 @@ import torch
 
 from acestep.training_v2.optim import build_optimizer, build_scheduler
 from acestep.training_v2.tensorboard_preview import (
+    build_preview_batch_from_sample,
     build_sample_preview,
     build_spectrogram_image,
+    collect_preview_samples,
     extract_first_audio_path,
     load_audio_preview,
-    should_log_sample_preview,
+    normalize_waveform_for_tensorboard,
+    select_preview_dataset,
 )
 from acestep.training_v2.tensorboard_utils import TrainingLogger
+from acestep.training_v2.tensorboard_checkpoint_preview import launch_generated_preview_job
 from acestep.training_v2.trainer_helpers import configure_memory_features, save_checkpoint, save_final
 from acestep.training_v2.ui import TrainingUpdate
 
@@ -175,16 +180,15 @@ def run_basic_training_loop(
     accumulated_loss = 0.0
     optimizer.zero_grad(set_to_none=True)
     module.model.decoder.train()
+    preview_dataset, _preview_source = select_preview_dataset(data_module)
+    preview_samples = collect_preview_samples(preview_dataset, max_items=2)
 
     for epoch in range(start_epoch, cfg.max_epochs):
         epoch_loss = 0.0
         num_updates = 0
         epoch_start = time.time()
-        preview_text: Optional[str] = None
 
         for batch in train_loader:
-            if preview_text is None:
-                preview_text = build_sample_preview(batch, epoch=epoch)
             if training_state and training_state.get("should_stop", False):
                 _stop_loss = accumulated_loss * cfg.gradient_accumulation_steps / max(accumulation_step, 1)
                 yield TrainingUpdate(global_step, _stop_loss, "[INFO] Training stopped", kind="complete")
@@ -229,22 +233,6 @@ def run_basic_training_loop(
         epoch_time = time.time() - epoch_start
         avg_epoch_loss = epoch_loss / max(num_updates, 1)
         tb.log_epoch_loss(avg_epoch_loss, epoch + 1)
-        if preview_text is not None and (
-            epoch == start_epoch or should_log_sample_preview(cfg.sample_every_n_epochs, epoch)
-        ):
-            tb.log_text("train/sample_cases", preview_text, global_step)
-            audio_path = extract_first_audio_path(batch)
-            if audio_path:
-                try:
-                    waveform, sample_rate = load_audio_preview(audio_path)
-                    tb.log_audio("train/sample_audio", waveform, global_step, sample_rate)
-                    tb.log_image(
-                        "train/sample_spectrogram",
-                        build_spectrogram_image(waveform),
-                        global_step,
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to log TensorBoard audio preview: %s", exc)
         yield TrainingUpdate(
             step=global_step, loss=avg_epoch_loss,
             msg=f"[OK] Epoch {epoch + 1}/{cfg.max_epochs} in {epoch_time:.1f}s",
@@ -254,6 +242,39 @@ def run_basic_training_loop(
         if (epoch + 1) % cfg.save_every_n_epochs == 0:
             ckpt_dir = str(output_dir / "checkpoints" / f"epoch_{epoch + 1}_loss_{avg_epoch_loss:.4f}")
             save_checkpoint(trainer, optimizer, scheduler, epoch + 1, global_step, ckpt_dir)
+            for sample_idx, preview_sample in enumerate(preview_samples):
+                sample_batch = build_preview_batch_from_sample(preview_sample)
+                preview_text = build_sample_preview(sample_batch, epoch=epoch, max_items=1)
+                tag_prefix = f"train_preview/sample_{sample_idx}"
+                tb.log_text(f"{tag_prefix}/groundtruth_case", preview_text, global_step)
+
+                audio_path = extract_first_audio_path(sample_batch)
+                if audio_path:
+                    try:
+                        waveform, sample_rate = load_audio_preview(audio_path)
+                        waveform = normalize_waveform_for_tensorboard(waveform)
+                        tb.log_audio(f"{tag_prefix}/groundtruth_audio", waveform, global_step, sample_rate)
+                        tb.log_image(
+                            f"{tag_prefix}/groundtruth_spectrogram",
+                            build_spectrogram_image(waveform),
+                            global_step,
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to log TensorBoard audio preview for sample %s: %s", sample_idx, exc)
+
+            launch_generated_preview_job(
+                python_executable=sys.executable,
+                checkpoint_path=ckpt_dir,
+                output_dir=str(output_dir),
+                dataset_dir=cfg.dataset_dir,
+                checkpoint_dir=cfg.checkpoint_dir,
+                model_variant=cfg.model_variant,
+                device=str(module.device),
+                precision=getattr(cfg, "precision", "bf16"),
+                val_split=getattr(cfg, "val_split", 0.0),
+                full_sft=getattr(cfg, "full_sft", False),
+                log_dir=str(cfg.effective_log_dir),
+            )
             yield TrainingUpdate(
                 step=global_step, loss=avg_epoch_loss,
                 msg=f"[OK] Checkpoint saved at epoch {epoch + 1}",

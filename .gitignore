@@ -296,3 +296,5 @@ muse-sft-test/preprocessed_tensors/suno_en_000551_1.pt
 muse-sft-test/preprocessed_tensors/suno_en_000560_0.pt
 muse-sft-test/preprocessed_tensors/suno_en_000655_0.pt
 muse-sft-test/preprocessed_tensors/suno_en_000941_0.pt
+
+**/events.out.tfevents.*
