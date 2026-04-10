@@ -165,7 +165,7 @@ CUDA_VISIBLE_DEVICES=1,3,4 python train.py --yes fixed \
     --full-sft \
     --batch-size 1 \
     --gradient-accumulation 4 \
-    --epochs 80 \
+    --epochs 120 \
     --warmup-steps 2000 \
     --weight-decay 0.01 \
     --optimizer-type adamw \
@@ -192,6 +192,9 @@ CUDA_VISIBLE_DEVICES=0,2 python train.py --yes fixed \
     --resume-from muse-sft-test/output/full_sft_muse_3gpu/checkpoints/epoch_30_loss_1.1466
 
 '''
+
+
+
 
 # 这里为了方便监视，给出了另外一版，这个也是在预加载上先集中在指定 3 号卡上面，原因如下：
 # 之前的第一次 OOM，发生在进入 Lightning Fabric / DeepSpeed 多卡初始化之前的“单卡预加载瞬间峰值”阶段。具体是 train_fixed.py 调用
@@ -256,3 +259,23 @@ tensorboard --logdir muse-sft-test/output/full_sft_muse_3gpu/runs --port 6006
 tensorboard --logdir muse-sft-test/output/lora_8samples_single_test/runs --port 6006
 
 '''
+
+'''
+tensorboard --logdir muse-sft-test/output/full_sft_muse_3gpu_resume/runs --port 6007
+
+经过了GPT的修改，我终于解决了断点续传的问题，除了muse-sft-test/output/full_sft_muse_3gpu_resume/checkpoints/epoch_10_loss_1.4058/distributed
+这个路径里保存了几个巨大的文件不知道是什么东西，是不是和显卡数量有关
+
+但是
+
+LD_LIBRARY_PATH="$NPP_LIB:$TORCH_LIB:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH" CUDA_VISIBLE_DEVICES=0,2 python train.py --yes fixed   --dataset-dir ./muse-sft-test/preprocessed_tensors   --output-dir ./muse-sft-test/output/full_sft_muse_3gpu_resume   --checkpoint-dir ./checkpoints   --model-variant turbo   --device cuda:0   --full-sft   --batch-size 1   --gradient-accumulation 4   --epochs 30   --learning-rate 1e-5   --warmup-steps 2000   --weight-decay 0.01   --optimizer-type adamw   --scheduler-type cosine   --gradient-checkpointing   --num-devices 2   --strategy ddp   --save-every 10   --val-split 0.1
+
+LD_LIBRARY_PATH="$NPP_LIB:$TORCH_LIB:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH" CUDA_VISIBLE_DEVICES=0,2 python train.py --yes fixed   --dataset-dir ./muse-sft-test/preprocessed_tensors   --output-dir ./muse-sft-test/output/full_sft_muse_3gpu_resume   --checkpoint-dir ./checkpoints   --model-variant turbo   --device cuda:0   --full-sft   --batch-size 1   --gradient-accumulation 4   --epochs 50   --learning-rate 1e-5   --warmup-steps 2000   --weight-decay 0.01   --optimizer-type adamw   --scheduler-type cosine   --gradient-checkpointing   --num-devices 2   --strategy ddp   --save-every 10   --val-split 0.1 --resume-from muse-sft-test/output/full_sft_muse_3gpu_resume/checkpoints/epoch_30_loss_1.1458
+
+LD_LIBRARY_PATH="$NPP_LIB:$TORCH_LIB:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH" CUDA_VISIBLE_DEVICES=0,2 python train.py --yes fixed   --dataset-dir ./muse-sft-test/preprocessed_tensors   --output-dir ./muse-sft-test/output/full_sft_muse_3gpu_resume   --checkpoint-dir ./checkpoints   --model-variant turbo   --device cuda:0   --full-sft   --batch-size 1   --gradient-accumulation 4   --epochs 75   --learning-rate 1e-5   --warmup-steps 2000   --weight-decay 0.01   --optimizer-type adamw   --scheduler-type cosine   --gradient-checkpointing   --num-devices 2   --strategy ddp   --save-every 10   --val-split 0.1 --resume-from muse-sft-test/output/full_sft_muse_3gpu_resume/checkpoints/epoch_50_loss_0.9939
+
+足够复刻出muse-sft-test/output/full_sft_muse_3gpu_resume/checkpoints/sft-retrain-distributed.png了
+
+'''
+
+

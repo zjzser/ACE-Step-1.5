@@ -170,6 +170,45 @@ class TestSaveAdapterFlatLora(unittest.TestCase):
         trainer.module.model.save_pretrained.assert_not_called()
 
 
+DeepSpeedStrategy = type("DeepSpeedStrategy", (), {})
+
+
+class TestSaveCheckpointFullSFTDistributed(unittest.TestCase):
+    """Distributed full SFT checkpoints should use Fabric save on all ranks."""
+
+    def test_save_checkpoint_uses_fabric_save_for_deepspeed_full_sft(self):
+        decoder = MagicMock(spec=["state_dict"])
+        decoder.state_dict.return_value = {"w": MagicMock()}
+        fabric = MagicMock()
+        fabric.world_size = 3
+        fabric.global_rank = 1
+        fabric.strategy = DeepSpeedStrategy()
+        trainer = _make_trainer(decoder, full_sft=True)
+        trainer.fabric = fabric
+
+        from acestep.training_v2.trainer_helpers import save_checkpoint
+
+        optimizer = MagicMock()
+        optimizer.state_dict.return_value = {"ds": True}
+        scheduler = MagicMock()
+        scheduler.state_dict.return_value = {"sched": True}
+
+        with (
+            patch("torch.save") as mock_torch_save,
+            patch("acestep.training_v2.trainer_helpers.save_adapter_flat") as mock_save_adapter,
+            patch("acestep.training_v2.trainer_helpers._uses_deepspeed_full_sft", return_value=True),
+        ):
+            save_checkpoint(trainer, optimizer, scheduler, 5, 12, "/tmp/out")
+
+        fabric.save.assert_called_once()
+        save_args, _ = fabric.save.call_args
+        self.assertEqual("/tmp/out/distributed", save_args[0])
+        self.assertEqual(5, save_args[1]["epoch"])
+        self.assertEqual(12, save_args[1]["global_step"])
+        mock_save_adapter.assert_not_called()
+        mock_torch_save.assert_not_called()
+
+
 class TestSaveAdapterFlatFullSFT(unittest.TestCase):
     """Full SFT saves decoder weights instead of adapter-only artifacts."""
 

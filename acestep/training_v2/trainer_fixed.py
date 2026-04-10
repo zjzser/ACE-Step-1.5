@@ -555,10 +555,16 @@ class FixedLoRATrainer:
                     kind="epoch", epoch=epoch + 1, max_epochs=cfg.max_epochs, epoch_time=epoch_time,
                 )
 
-            # Checkpoint (only rank 0)
-            if is_main and (epoch + 1) % cfg.save_every_n_epochs == 0:
+            # Checkpoint
+            should_save_checkpoint = (epoch + 1) % cfg.save_every_n_epochs == 0
+            if should_save_checkpoint:
                 ckpt_dir = str(output_dir / "checkpoints" / f"epoch_{epoch + 1}_loss_{avg_epoch_loss:.4f}")
-                self._save_checkpoint(optimizer, scheduler, epoch + 1, global_step, ckpt_dir)
+                if cfg.full_sft and num_devices > 1:
+                    self._save_checkpoint(optimizer, scheduler, epoch + 1, global_step, ckpt_dir)
+                elif is_main:
+                    self._save_checkpoint(optimizer, scheduler, epoch + 1, global_step, ckpt_dir)
+
+            if is_main and should_save_checkpoint:
                 for sample_idx, preview_sample in enumerate(preview_samples):
                     sample_batch = build_preview_batch_from_sample(preview_sample)
                     preview_text = build_sample_preview(sample_batch, epoch=epoch, max_items=1)

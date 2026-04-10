@@ -29,6 +29,25 @@ from acestep.training_v2.ui import TrainingUpdate
 logger = logging.getLogger(__name__)
 
 
+def _uses_deepspeed_full_sft(trainer: Any) -> bool:
+    """Return True when *trainer* is running full SFT through Fabric DeepSpeed."""
+    fabric = getattr(trainer, "fabric", None)
+    if fabric is None:
+        return False
+    strategy = getattr(fabric, "strategy", None)
+    return bool(
+        getattr(trainer.training_config, "full_sft", False)
+        and getattr(fabric, "world_size", 1) > 1
+        and strategy is not None
+        and strategy.__class__.__name__ == "DeepSpeedStrategy"
+    )
+
+
+def _distributed_checkpoint_path(ckpt_dir: str | Path) -> str:
+    """Return the Fabric/DeepSpeed checkpoint directory for *ckpt_dir*."""
+    return str(Path(ckpt_dir) / "distributed")
+
+
 # ---------------------------------------------------------------------------
 # Module introspection
 # ---------------------------------------------------------------------------
@@ -224,7 +243,25 @@ def save_checkpoint(
     users can point inference tools directly at any checkpoint.
     ``training_state.pt`` is saved alongside for resume support.
     """
-    save_adapter_flat(trainer, ckpt_dir)
+    use_distributed_full_sft = _uses_deepspeed_full_sft(trainer)
+    fabric = getattr(trainer, "fabric", None)
+    rank = getattr(fabric, "global_rank", 0) if fabric is not None else 0
+
+    if not use_distributed_full_sft or rank == 0:
+        save_adapter_flat(trainer, ckpt_dir)
+
+    if use_distributed_full_sft:
+        assert fabric is not None
+        fabric.save(
+            _distributed_checkpoint_path(ckpt_dir),
+            {
+                "model": trainer.module.model.decoder,
+                "optimizer": optimizer,
+                "scheduler": scheduler,
+                "epoch": epoch,
+                "global_step": global_step,
+            },
+        )
 
     # Save optimizer / scheduler / progress for resume
     training_state = {
@@ -233,23 +270,25 @@ def save_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
     }
-    state_path = os.path.join(ckpt_dir, "training_state.pt")
-    torch.save(training_state, state_path)
+    if not use_distributed_full_sft or rank == 0:
+        state_path = os.path.join(ckpt_dir, "training_state.pt")
+        torch.save(training_state, state_path)
 
     # Also write a safetensors file with epoch/global_step so that
     # load_training_checkpoint (which reads .safetensors) can restore
     # training progress metadata.
-    try:
-        from safetensors.torch import save_file as _save_safetensors
+    if not use_distributed_full_sft or rank == 0:
+        try:
+            from safetensors.torch import save_file as _save_safetensors
 
-        meta_tensors = {
-            "epoch": torch.tensor([epoch], dtype=torch.int64),
-            "global_step": torch.tensor([global_step], dtype=torch.int64),
-        }
-        sf_path = os.path.join(ckpt_dir, "training_state.safetensors")
-        _save_safetensors(meta_tensors, sf_path)
-    except Exception as exc:
-        logger.debug("Could not write training_state.safetensors: %s", exc)
+            meta_tensors = {
+                "epoch": torch.tensor([epoch], dtype=torch.int64),
+                "global_step": torch.tensor([global_step], dtype=torch.int64),
+            }
+            sf_path = os.path.join(ckpt_dir, "training_state.safetensors")
+            _save_safetensors(meta_tensors, sf_path)
+        except Exception as exc:
+            logger.debug("Could not write training_state.safetensors: %s", exc)
 
     logger.info(
         "Training checkpoint saved to %s (epoch %d, step %d)",
@@ -351,6 +390,34 @@ def resume_checkpoint(
     if getattr(trainer.training_config, "full_sft", False):
         decoder_state_path = ckpt_dir / "decoder_state_dict.pt"
         state_path = ckpt_dir / "training_state.pt"
+        distributed_path = Path(_distributed_checkpoint_path(ckpt_dir))
+        use_distributed_full_sft = _uses_deepspeed_full_sft(trainer) and distributed_path.exists()
+
+        if use_distributed_full_sft:
+            fabric = getattr(trainer, "fabric", None)
+            assert fabric is not None
+            restore_state = {
+                "model": module.model.decoder,
+                "optimizer": optimizer,
+                "scheduler": scheduler,
+            }
+            remainder = fabric.load(distributed_path, restore_state, strict=False)
+            epoch = int(remainder.get("epoch", 0))
+            step = int(remainder.get("global_step", 0))
+            resume_info = (
+                f"[INFO] Full SFT DeepSpeed checkpoint restored from epoch {epoch}, step {step}, "
+                "optimizer OK, scheduler OK"
+            )
+            logger.info(resume_info)
+            yield TrainingUpdate(0, 0.0, resume_info, kind="info")
+            yield TrainingUpdate(
+                0,
+                0.0,
+                f"[OK] Resumed full SFT decoder from epoch {epoch}, step {step}",
+                kind="info",
+            )
+            return (epoch, step)
+
         if not decoder_state_path.exists():
             yield TrainingUpdate(
                 0,
@@ -372,6 +439,8 @@ def resume_checkpoint(
 
         epoch = 0
         step = 0
+        loaded_optimizer = False
+        loaded_scheduler = False
         if state_path.exists():
             state = torch.load(
                 str(state_path), map_location=module.device, weights_only=False
@@ -379,14 +448,47 @@ def resume_checkpoint(
             epoch = state.get("epoch", 0)
             step = state.get("global_step", 0)
 
-        resume_info = (
-            "[INFO] Full SFT resume restores decoder weights and training progress only; "
-            "DeepSpeed optimizer/scheduler state is intentionally skipped for portability."
-        )
+            if "optimizer_state_dict" in state:
+                try:
+                    optimizer_state = state["optimizer_state_dict"]
+                    for optimizer_slot in optimizer_state.get("state", {}).values():
+                        for key, value in optimizer_slot.items():
+                            if isinstance(value, torch.Tensor):
+                                optimizer_slot[key] = value.to(module.device)
+                    optimizer.load_state_dict(optimizer_state)
+                    loaded_optimizer = True
+                except (AttributeError, KeyError, RuntimeError, ValueError) as exc:
+                    opt_warn = (
+                        "[WARN] Could not restore full SFT optimizer state; "
+                        f"continuing with a fresh optimizer: {exc}"
+                    )
+                    logger.warning(opt_warn)
+                    yield TrainingUpdate(0, 0.0, opt_warn, kind="warn")
+
+            if "scheduler_state_dict" in state:
+                try:
+                    scheduler.load_state_dict(state["scheduler_state_dict"])
+                    loaded_scheduler = True
+                except (AttributeError, KeyError, RuntimeError, ValueError) as exc:
+                    sched_warn = (
+                        "[WARN] Could not restore full SFT scheduler state; "
+                        f"falling back to step alignment: {exc}"
+                    )
+                    logger.warning(sched_warn)
+                    yield TrainingUpdate(0, 0.0, sched_warn, kind="warn")
+
+        parts = [f"[INFO] Full SFT decoder restored from epoch {epoch}, step {step}"]
+        if loaded_optimizer:
+            parts.append("optimizer OK")
+        if loaded_scheduler:
+            parts.append("scheduler OK")
+        if not loaded_optimizer and not loaded_scheduler:
+            parts.append("optimizer/scheduler fallback mode")
+        resume_info = ", ".join(parts)
         logger.info(resume_info)
         yield TrainingUpdate(0, 0.0, resume_info, kind="info")
 
-        if step > 0:
+        if step > 0 and not loaded_scheduler:
             try:
                 scheduler.step(step)
             except Exception as exc:
