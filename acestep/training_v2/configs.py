@@ -185,6 +185,12 @@ class TrainingConfigV2(TrainingConfig):
     resume_from: Optional[str] = None
     """Path to checkpoint directory to resume training from."""
 
+    resume_mode: str = "portable"
+    """Resume mode: strict prefers distributed checkpoint state, portable ignores it."""
+
+    save_distributed_checkpoint: bool = False
+    """Whether multi-GPU full SFT should save distributed DeepSpeed checkpoints for strict resume."""
+
     # --- Extended TensorBoard logging ---------------------------------------
     log_dir: Optional[str] = None
     """TensorBoard log directory.  Defaults to {output_dir}/runs."""
@@ -274,6 +280,8 @@ class TrainingConfigV2(TrainingConfig):
                 "num_devices": self.num_devices,
                 "strategy": self.strategy,
                 "resume_from": self.resume_from,
+                "resume_mode": self.resume_mode,
+                "save_distributed_checkpoint": self.save_distributed_checkpoint,
                 "log_dir": self.log_dir,
                 "log_every": self.log_every,
                 "log_heavy_every": self.log_heavy_every,

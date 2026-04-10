@@ -165,16 +165,26 @@ def run_basic_training_loop(
     start_epoch = 0
     global_step = 0
 
-    if cfg.resume_from and Path(cfg.resume_from).exists():
-        try:
-            yield TrainingUpdate(0, 0.0, f"[INFO] Loading checkpoint from {cfg.resume_from}", kind="info")
-            from acestep.training_v2.trainer_helpers import resume_checkpoint
-            resumed = yield from resume_checkpoint(trainer, cfg.resume_from, optimizer, scheduler)
-            if resumed is not None:
-                start_epoch, global_step = resumed
-        except Exception as exc:
-            logger.exception("Failed to load checkpoint")
-            yield TrainingUpdate(0, 0.0, f"[WARN] Checkpoint load failed: {exc} -- starting fresh", kind="warn")
+    if cfg.resume_from:
+        resume_mode = getattr(cfg, "resume_mode", "portable")
+        if not Path(cfg.resume_from).exists():
+            msg = f"Requested resume checkpoint not found: {cfg.resume_from}"
+            yield TrainingUpdate(0, 0.0, f"[WARN] {msg}", kind="warn")
+            raise FileNotFoundError(msg)
+        else:
+            try:
+                yield TrainingUpdate(0, 0.0, f"[INFO] Loading checkpoint from {cfg.resume_from}", kind="info")
+                from acestep.training_v2.trainer_helpers import resume_checkpoint
+                resumed = yield from resume_checkpoint(trainer, cfg.resume_from, optimizer, scheduler)
+                if resumed is not None:
+                    start_epoch, global_step = resumed
+            except Exception as exc:
+                logger.exception("Failed to load checkpoint")
+                if resume_mode == "strict":
+                    raise RuntimeError(
+                        f"Strict resume failed for {cfg.resume_from}: {exc}"
+                    ) from exc
+                yield TrainingUpdate(0, 0.0, f"[WARN] Checkpoint load failed: {exc} -- starting fresh", kind="warn")
 
     accumulation_step = 0
     accumulated_loss = 0.0

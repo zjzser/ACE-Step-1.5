@@ -120,6 +120,9 @@ def build_configs(args: argparse.Namespace) -> Tuple[AdapterConfig, TrainingConf
             attention_type=attention_type,
         )
 
+    save_mode = getattr(args, "save_mode", "portable")
+    save_distributed_checkpoint = save_mode == "strict"
+
     # -- Clamp DataLoader flags when num_workers <= 0 -----------------------
     num_workers = args.num_workers
     prefetch_factor = args.prefetch_factor
@@ -171,6 +174,8 @@ def build_configs(args: argparse.Namespace) -> Tuple[AdapterConfig, TrainingConf
         num_devices=getattr(args, "num_devices", 1),
         strategy=getattr(args, "strategy", "auto"),
         resume_from=args.resume_from,
+        resume_mode=getattr(args, "resume_mode", "portable"),
+        save_distributed_checkpoint=save_distributed_checkpoint,
         log_dir=args.log_dir,
         log_every=args.log_every,
         log_heavy_every=args.log_heavy_every,

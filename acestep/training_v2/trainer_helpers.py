@@ -8,6 +8,7 @@ configuration, and module wrapper introspection -- extracted from
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -41,6 +42,19 @@ def _uses_deepspeed_full_sft(trainer: Any) -> bool:
         and strategy is not None
         and strategy.__class__.__name__ == "DeepSpeedStrategy"
     )
+
+
+def _save_distributed_checkpoint_enabled(trainer: Any) -> bool:
+    """Return whether distributed full SFT checkpoints should be saved."""
+    return bool(getattr(trainer.training_config, "save_distributed_checkpoint", True))
+
+
+def _resume_mode(trainer: Any) -> str:
+    """Return the configured resume mode for *trainer*."""
+    mode = getattr(trainer.training_config, "resume_mode", "strict")
+    if mode not in {"strict", "portable"}:
+        return "strict"
+    return mode
 
 
 def _distributed_checkpoint_path(ckpt_dir: str | Path) -> str:
@@ -243,7 +257,10 @@ def save_checkpoint(
     users can point inference tools directly at any checkpoint.
     ``training_state.pt`` is saved alongside for resume support.
     """
-    use_distributed_full_sft = _uses_deepspeed_full_sft(trainer)
+    use_distributed_full_sft = (
+        _uses_deepspeed_full_sft(trainer)
+        and _save_distributed_checkpoint_enabled(trainer)
+    )
     fabric = getattr(trainer, "fabric", None)
     rank = getattr(fabric, "global_rank", 0) if fabric is not None else 0
 
@@ -252,8 +269,9 @@ def save_checkpoint(
 
     if use_distributed_full_sft:
         assert fabric is not None
+        distributed_path = Path(_distributed_checkpoint_path(ckpt_dir))
         fabric.save(
-            _distributed_checkpoint_path(ckpt_dir),
+            distributed_path,
             {
                 "model": trainer.module.model.decoder,
                 "optimizer": optimizer,
@@ -262,6 +280,66 @@ def save_checkpoint(
                 "global_step": global_step,
             },
         )
+        if rank == 0:
+            os.makedirs(distributed_path, exist_ok=True)
+            manifest = {
+                "_comment": "Readable metadata for strict distributed resume. JSON does not support real comments, so explanatory fields are stored explicitly.",
+                "checkpoint_type": "full_sft_distributed",
+                "resume_mode_required": "strict",
+                "checkpoint_metadata": {
+                    "_comment": "Basic identity for this checkpoint.",
+                    "checkpoint_path": str(Path(ckpt_dir).resolve()),
+                    "distributed_checkpoint_path": str(distributed_path.resolve()),
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "full_sft": bool(getattr(trainer.training_config, "full_sft", False)),
+                    "global_rank": int(rank),
+                },
+                "strict_resume_requirements": {
+                    "_comment": "These fields should match when using --resume-mode strict. If they do not match, prefer --resume-mode portable.",
+                    "save_mode": "strict",
+                    "resume_mode": "strict",
+                    "num_devices": int(getattr(trainer.training_config, "num_devices", 1)),
+                    "world_size": int(getattr(fabric, "world_size", 1)),
+                    "strategy": str(getattr(trainer.training_config, "strategy", "auto")),
+                    "device": str(getattr(trainer.training_config, "device", "auto")),
+                    "precision": str(getattr(trainer.training_config, "precision", "auto")),
+                    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                    "must_keep_distributed_directory": True,
+                    "how_to_resume_strict": [
+                        "Use --resume-mode strict.",
+                        "Keep the distributed/ directory intact.",
+                        "Use the same GPU count and world size.",
+                        "Keep the same distributed strategy and precision.",
+                        "Keep CUDA_VISIBLE_DEVICES in the same order when possible.",
+                    ],
+                },
+                "training_config": {
+                    "_comment": "Training hyperparameters and paths used when this checkpoint was saved.",
+                    "model_variant": str(getattr(trainer.training_config, "model_variant", "turbo")),
+                    "dataset_dir": str(getattr(trainer.training_config, "dataset_dir", "")),
+                    "checkpoint_dir": str(getattr(trainer.training_config, "checkpoint_dir", "")),
+                    "output_dir": str(getattr(trainer.training_config, "output_dir", "")),
+                    "optimizer_type": str(getattr(trainer.training_config, "optimizer_type", "adamw")),
+                    "scheduler_type": str(getattr(trainer.training_config, "scheduler_type", "cosine")),
+                    "batch_size": getattr(trainer.training_config, "batch_size", 1),
+                    "gradient_accumulation_steps": getattr(trainer.training_config, "gradient_accumulation_steps", 1),
+                    "learning_rate": getattr(trainer.training_config, "learning_rate", None),
+                    "warmup_steps": getattr(trainer.training_config, "warmup_steps", None),
+                    "weight_decay": getattr(trainer.training_config, "weight_decay", None),
+                    "gradient_checkpointing": bool(getattr(trainer.training_config, "gradient_checkpointing", False)),
+                    "offload_encoder": bool(getattr(trainer.training_config, "offload_encoder", False)),
+                },
+                "note": (
+                    "Strict resume expects matching distributed topology. If GPU count, "
+                    "world size, strategy, precision, or CUDA_VISIBLE_DEVICES order changes, "
+                    "use --resume-mode portable instead."
+                ),
+            }
+            (distributed_path / "resume_manifest.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
 
     # Save optimizer / scheduler / progress for resume
     training_state = {
@@ -391,7 +469,16 @@ def resume_checkpoint(
         decoder_state_path = ckpt_dir / "decoder_state_dict.pt"
         state_path = ckpt_dir / "training_state.pt"
         distributed_path = Path(_distributed_checkpoint_path(ckpt_dir))
-        use_distributed_full_sft = _uses_deepspeed_full_sft(trainer) and distributed_path.exists()
+        resume_mode = _resume_mode(trainer)
+        expects_distributed_full_sft = resume_mode == "strict" and _uses_deepspeed_full_sft(trainer)
+        use_distributed_full_sft = expects_distributed_full_sft and distributed_path.exists()
+
+        if expects_distributed_full_sft and not distributed_path.exists():
+            raise RuntimeError(
+                "Strict full SFT resume requires a distributed checkpoint directory at "
+                f"{distributed_path}, but it was not found. Re-run with --resume-mode portable "
+                "if you want portable fallback behavior."
+            )
 
         if use_distributed_full_sft:
             fabric = getattr(trainer, "fabric", None)
@@ -401,7 +488,13 @@ def resume_checkpoint(
                 "optimizer": optimizer,
                 "scheduler": scheduler,
             }
-            remainder = fabric.load(distributed_path, restore_state, strict=False)
+            try:
+                remainder = fabric.load(distributed_path, restore_state, strict=False)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Strict full SFT distributed resume failed. Re-run with --resume-mode portable "
+                    "if you want portable fallback behavior."
+                ) from exc
             epoch = int(remainder.get("epoch", 0))
             step = int(remainder.get("global_step", 0))
             resume_info = (

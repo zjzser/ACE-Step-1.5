@@ -421,21 +421,32 @@ class FixedLoRATrainer:
         start_epoch = 0
         global_step = 0
 
-        if cfg.resume_from and Path(cfg.resume_from).exists():
-            try:
+        if cfg.resume_from:
+            resume_mode = getattr(cfg, "resume_mode", "portable")
+            if not Path(cfg.resume_from).exists():
+                msg = f"Requested resume checkpoint not found: {cfg.resume_from}"
                 if is_main:
-                    yield TrainingUpdate(0, 0.0, f"[INFO] Loading checkpoint from {cfg.resume_from}", kind="info")
-                resumed = yield from self._resume_checkpoint(
-                    cfg.resume_from, optimizer, scheduler,
-                )
-                if resumed is not None:
-                    start_epoch, global_step = resumed
-            except Exception as exc:
-                logger.exception("Failed to load checkpoint")
-                if is_main:
-                    yield TrainingUpdate(0, 0.0, f"[WARN] Checkpoint load failed: {exc} -- starting fresh", kind="warn")
-                start_epoch = 0
-                global_step = 0
+                    yield TrainingUpdate(0, 0.0, f"[WARN] {msg}", kind="warn")
+                raise FileNotFoundError(msg)
+            else:
+                try:
+                    if is_main:
+                        yield TrainingUpdate(0, 0.0, f"[INFO] Loading checkpoint from {cfg.resume_from}", kind="info")
+                    resumed = yield from self._resume_checkpoint(
+                        cfg.resume_from, optimizer, scheduler,
+                    )
+                    if resumed is not None:
+                        start_epoch, global_step = resumed
+                except Exception as exc:
+                    logger.exception("Failed to load checkpoint")
+                    if resume_mode == "strict":
+                        raise RuntimeError(
+                            f"Strict resume failed for {cfg.resume_from}: {exc}"
+                        ) from exc
+                    if is_main:
+                        yield TrainingUpdate(0, 0.0, f"[WARN] Checkpoint load failed: {exc} -- starting fresh", kind="warn")
+                    start_epoch = 0
+                    global_step = 0
 
         # -- Training loop --------------------------------------------------
         accumulation_step = 0
@@ -559,7 +570,12 @@ class FixedLoRATrainer:
             should_save_checkpoint = (epoch + 1) % cfg.save_every_n_epochs == 0
             if should_save_checkpoint:
                 ckpt_dir = str(output_dir / "checkpoints" / f"epoch_{epoch + 1}_loss_{avg_epoch_loss:.4f}")
-                if cfg.full_sft and num_devices > 1:
+                distributed_strict_save = (
+                    cfg.full_sft
+                    and num_devices > 1
+                    and getattr(cfg, "save_distributed_checkpoint", False)
+                )
+                if distributed_strict_save:
                     self._save_checkpoint(optimizer, scheduler, epoch + 1, global_step, ckpt_dir)
                 elif is_main:
                     self._save_checkpoint(optimizer, scheduler, epoch + 1, global_step, ckpt_dir)

@@ -264,7 +264,7 @@ tensorboard --logdir muse-sft-test/output/lora_8samples_single_test/runs --port 
 tensorboard --logdir muse-sft-test/output/full_sft_muse_3gpu_resume/runs --port 6007
 
 经过了GPT的修改，我终于解决了断点续传的问题，除了muse-sft-test/output/full_sft_muse_3gpu_resume/checkpoints/epoch_10_loss_1.4058/distributed
-这个路径里保存了几个巨大的文件不知道是什么东西，是不是和显卡数量有关
+这个路径里保存了几个巨大的文件，和显卡数量有关，显然是保存了deepspeed下每个对应子进程的全部内存
 
 但是
 
@@ -277,5 +277,44 @@ LD_LIBRARY_PATH="$NPP_LIB:$TORCH_LIB:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH" CUDA_VI
 足够复刻出muse-sft-test/output/full_sft_muse_3gpu_resume/checkpoints/sft-retrain-distributed.png了
 
 '''
+# 新加了两个(可选的)命令来灵活调节
+# --save-mode portable 或者 strict
+# --resume-mode portable 或者 strict
+# 如果没选，默认都是portable选项
+# 区别在于 --save-mode portable 不保存 distributed 文件夹节省空间 --save-mode strict 必须要有distributed文件夹
+# --resume-mode portable 则无视保留的 distributed 文件夹，土法吸收参数，--resume-mode strict 则是考虑从 distributed 加载deepspeed文件
+# 如果 -resume-from 路径失效的时候，无论--resume-mode 是什么，都是自动报错退出停止，而不是重新开始训练
+# 如果 --resume-mode 是 strict，但是 显卡数目不对(比之前多一张少一张)，导致rank数对不起，或者显卡状态不足，这些都是常见情况，那么也会自动报错退出停止，而不是重新从第0步开始训练
 
+# 例如下面就是 strict 严格的继续训练和严格地保存的例子，这必须要前后用严格地显卡数目，否则就会对不上报错，并且要准确的恢复路径，否则报错
+# 如果是 -resume-mode portable 那就随意很多了，即使前后显卡数目不一致，但由于此时只加载参数本身，不考虑优化状态，也依旧可以接下参数继续训练，
+# 只是这时的优化器设置会使得相接之时出现大量的损失函数波动。当然，portable也是需要正确的续点恢复路径的，否则报错
 
+'''
+CUDA_VISIBLE_DEVICES=0,2 python train.py \
+  --yes fixed  \
+  --dataset-dir ./muse-sft-test/preprocessed_tensors   \
+  --output-dir ./muse-sft-test/output/full_sft_muse_3gpu_resume_3   \
+  --checkpoint-dir ./checkpoints   \
+  --model-variant turbo   \
+  --device cuda:0   \
+  --full-sft   \
+  --batch-size 1  \
+  --gradient-accumulation 4   \
+  --learning-rate 1e-5   \
+  --warmup-steps 2000   \
+  --weight-decay 0.01   \
+  --optimizer-type adamw  \
+  --scheduler-type cosine   \
+  --gradient-checkpointing   \
+  --num-devices 2   \
+  --strategy ddp   \
+  --val-split 0.1  \
+  --epochs 20   \
+  --save-every 5   \
+  --save-mode strict \
+  --resume-from muse-sft-test/output/full_sft_muse_3gpu_resume_3/checkpoints/epoch_10_loss_1.6547 \
+  --resume-mode strict 
+
+tensorboard --logdir muse-sft-test/output/full_sft_muse_3gpu_resume_3/runs --port 6006
+'''

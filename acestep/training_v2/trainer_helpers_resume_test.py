@@ -91,7 +91,7 @@ class TestResumeCheckpointFullSFT(unittest.TestCase):
         fabric.load.return_value = {"epoch": 20, "global_step": 123}
         trainer = SimpleNamespace(
             module=SimpleNamespace(model=_DummyModel(), device=torch.device("cpu")),
-            training_config=SimpleNamespace(full_sft=True),
+            training_config=SimpleNamespace(full_sft=True, resume_mode="strict"),
             fabric=fabric,
         )
         optimizer = _DummyOptimizer()
@@ -115,11 +115,56 @@ class TestResumeCheckpointFullSFT(unittest.TestCase):
         self.assertIn("optimizer OK", updates[0].msg)
         self.assertIn("scheduler OK", updates[0].msg)
 
+    def test_full_sft_resume_strict_mode_requires_distributed_checkpoint(self) -> None:
+        ckpt_dir = self._build_checkpoint_dir()
+        fabric = MagicMock()
+        fabric.world_size = 3
+        fabric.strategy = DeepSpeedStrategy()
+        trainer = SimpleNamespace(
+            module=SimpleNamespace(model=_DummyModel(), device=torch.device("cpu")),
+            training_config=SimpleNamespace(full_sft=True, resume_mode="strict"),
+            fabric=fabric,
+        )
+
+        with patch("acestep.training_v2.trainer_helpers._uses_deepspeed_full_sft", return_value=True):
+            gen = resume_checkpoint(trainer, str(ckpt_dir), _DummyOptimizer(), _DummyScheduler())
+            with self.assertRaisesRegex(RuntimeError, "Strict full SFT resume requires a distributed checkpoint"):
+                next(gen)
+
+    def test_full_sft_resume_portable_mode_ignores_distributed_checkpoint(self) -> None:
+        ckpt_dir = self._build_checkpoint_dir()
+        (ckpt_dir / "distributed").mkdir()
+        fabric = MagicMock()
+        fabric.world_size = 3
+        fabric.strategy = DeepSpeedStrategy()
+        trainer = SimpleNamespace(
+            module=SimpleNamespace(model=_DummyModel(), device=torch.device("cpu")),
+            training_config=SimpleNamespace(full_sft=True, resume_mode="portable"),
+            fabric=fabric,
+        )
+        optimizer = _DummyOptimizer()
+        scheduler = _DummyScheduler()
+
+        updates = []
+        gen = resume_checkpoint(trainer, str(ckpt_dir), optimizer, scheduler)
+        try:
+            while True:
+                updates.append(next(gen))
+        except StopIteration as stop:
+            result = stop.value
+
+        self.assertEqual((20, 123), result)
+        fabric.load.assert_not_called()
+        self.assertTrue(optimizer.loaded)
+        self.assertTrue(scheduler.loaded)
+        self.assertIn("optimizer OK", updates[0].msg)
+        self.assertIn("scheduler OK", updates[0].msg)
+
     def test_full_sft_resume_restores_optimizer_and_scheduler_when_available(self) -> None:
         ckpt_dir = self._build_checkpoint_dir()
         trainer = SimpleNamespace(
             module=SimpleNamespace(model=_DummyModel(), device=torch.device("cpu")),
-            training_config=SimpleNamespace(full_sft=True),
+            training_config=SimpleNamespace(full_sft=True, resume_mode="strict"),
         )
         optimizer = _DummyOptimizer()
         scheduler = _DummyScheduler()
@@ -147,7 +192,7 @@ class TestResumeCheckpointFullSFT(unittest.TestCase):
         ckpt_dir = self._build_checkpoint_dir()
         trainer = SimpleNamespace(
             module=SimpleNamespace(model=_DummyModel(), device=torch.device("cpu")),
-            training_config=SimpleNamespace(full_sft=True),
+            training_config=SimpleNamespace(full_sft=True, resume_mode="strict"),
         )
         optimizer = _DummyOptimizer(should_fail=True)
         scheduler = _DummyScheduler(should_fail=True)

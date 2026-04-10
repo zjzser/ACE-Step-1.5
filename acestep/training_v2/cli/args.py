@@ -272,6 +272,9 @@ def _add_common_training_args(parser: argparse.ArgumentParser) -> None:
     g_ckpt.add_argument("--output-dir", type=str, required=True, help="Output directory for LoRA weights")
     g_ckpt.add_argument("--save-every", type=int, default=10, help="Save checkpoint every N epochs (default: 10)")
     g_ckpt.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint dir to resume from")
+    g_ckpt.add_argument("--resume-mode", type=str, default="portable", choices=["strict", "portable"], help="Resume mode: strict uses distributed checkpoints when available; portable ignores distributed checkpoints and loads only portable files (default: portable)")
+    g_ckpt.add_argument("--save-mode", type=str, default="portable", choices=["strict", "portable"], help="Checkpoint save mode: strict also writes distributed DeepSpeed shards for exact resume; portable saves only portable files (default: portable)")
+    g_ckpt.add_argument("--save-distributed-checkpoint", action=argparse.BooleanOptionalAction, default=True, help="Deprecated alias for the distributed-checkpoint part of --save-mode. When full SFT runs with multi-GPU DeepSpeed, also save distributed checkpoint shards for strict resume (default: True)")
 
     # -- Logging / TensorBoard -----------------------------------------------
     g_log = parser.add_argument_group("Logging / TensorBoard")

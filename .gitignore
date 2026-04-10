@@ -302,3 +302,7 @@ muse-sft-test/output/full_sft_muse_3gpu_resume/final/configuration_acestep_v15.p
 muse-sft-test/output/full_sft_muse_3gpu_resume/final/decoder_state_dict.pt
 muse-sft-test/output/full_sft_muse_3gpu_resume/final/model.safetensors
 muse-sft-test/output/full_sft_muse_3gpu_resume/final/modeling_acestep_v15_turbo.py
+muse-sft-test/output/full_sft_muse_3gpu_resume_3/final/configuration_acestep_v15.py
+muse-sft-test/output/full_sft_muse_3gpu_resume_3/final/decoder_state_dict.pt
+muse-sft-test/output/full_sft_muse_3gpu_resume_3/final/model.safetensors
+muse-sft-test/output/full_sft_muse_3gpu_resume_3/final/modeling_acestep_v15_turbo.py

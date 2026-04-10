@@ -5,9 +5,12 @@ The save_adapter_flat function only needs attribute-level duck-typing, so
 plain MagicMock objects work as stand-ins for nn.Module subclasses.
 """
 
+import json
 import sys
 import types
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 
@@ -202,11 +205,120 @@ class TestSaveCheckpointFullSFTDistributed(unittest.TestCase):
 
         fabric.save.assert_called_once()
         save_args, _ = fabric.save.call_args
-        self.assertEqual("/tmp/out/distributed", save_args[0])
+        self.assertEqual(Path("/tmp/out/distributed"), Path(save_args[0]))
         self.assertEqual(5, save_args[1]["epoch"])
         self.assertEqual(12, save_args[1]["global_step"])
         mock_save_adapter.assert_not_called()
         mock_torch_save.assert_not_called()
+
+
+class TestSaveCheckpointFullSFTNoDistributed(unittest.TestCase):
+    """Distributed full SFT checkpoint saving can be disabled explicitly."""
+
+    def test_save_checkpoint_skips_fabric_save_when_toggle_is_off(self):
+        decoder = MagicMock(spec=["state_dict"])
+        decoder.state_dict.return_value = {"w": MagicMock()}
+        fabric = MagicMock()
+        fabric.world_size = 3
+        fabric.global_rank = 1
+        fabric.strategy = DeepSpeedStrategy()
+        trainer = _make_trainer(decoder, full_sft=True)
+        trainer.fabric = fabric
+        trainer.training_config.save_distributed_checkpoint = False
+
+        from acestep.training_v2.trainer_helpers import save_checkpoint
+
+        optimizer = MagicMock()
+        optimizer.state_dict.return_value = {"plain": True}
+        scheduler = MagicMock()
+        scheduler.state_dict.return_value = {"sched": True}
+
+        with (
+            patch("torch.save") as mock_torch_save,
+            patch("acestep.training_v2.trainer_helpers.save_adapter_flat") as mock_save_adapter,
+        ):
+            save_checkpoint(trainer, optimizer, scheduler, 5, 12, "/tmp/out")
+
+        fabric.save.assert_not_called()
+        mock_save_adapter.assert_called_once_with(trainer, "/tmp/out")
+        mock_torch_save.assert_called_once()
+
+
+class TestSaveCheckpointManifest(unittest.TestCase):
+    """Strict distributed checkpoints should include a readable resume manifest."""
+
+    def test_strict_distributed_save_writes_resume_manifest(self):
+        decoder = MagicMock(spec=["state_dict"])
+        decoder.state_dict.return_value = {"w": MagicMock()}
+        fabric = MagicMock()
+        fabric.world_size = 3
+        fabric.global_rank = 0
+        fabric.strategy = DeepSpeedStrategy()
+        trainer = _make_trainer(decoder, full_sft=True)
+        trainer.fabric = fabric
+        trainer.training_config.save_distributed_checkpoint = True
+        trainer.training_config.num_devices = 3
+        trainer.training_config.strategy = "ddp"
+        trainer.training_config.model_variant = "turbo"
+        trainer.training_config.dataset_dir = "./dataset"
+        trainer.training_config.checkpoint_dir = "./checkpoints"
+        trainer.training_config.output_dir = "./output"
+        trainer.training_config.optimizer_type = "adamw"
+        trainer.training_config.scheduler_type = "cosine"
+        trainer.training_config.batch_size = 1
+        trainer.training_config.gradient_accumulation_steps = 4
+        trainer.training_config.learning_rate = 1e-5
+        trainer.training_config.warmup_steps = 2000
+        trainer.training_config.weight_decay = 0.01
+
+        from acestep.training_v2.trainer_helpers import save_checkpoint
+
+        optimizer = MagicMock()
+        optimizer.state_dict.return_value = {"ds": True}
+        scheduler = MagicMock()
+        scheduler.state_dict.return_value = {"sched": True}
+
+        with TemporaryDirectory() as tmpdir:
+            ckpt_dir = str(Path(tmpdir) / "epoch_5_loss_1.0")
+            with (
+                patch("torch.save"),
+                patch("acestep.training_v2.trainer_helpers.save_adapter_flat"),
+                patch("acestep.training_v2.trainer_helpers._uses_deepspeed_full_sft", return_value=True),
+            ):
+                save_checkpoint(trainer, optimizer, scheduler, 5, 12, ckpt_dir)
+
+            manifest_path = Path(ckpt_dir) / "distributed" / "resume_manifest.json"
+            self.assertTrue(manifest_path.exists())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual("strict", manifest["resume_mode_required"])
+            self.assertEqual("full_sft_distributed", manifest["checkpoint_type"])
+            self.assertIn("checkpoint_metadata", manifest)
+            self.assertIn("strict_resume_requirements", manifest)
+            self.assertIn("training_config", manifest)
+            self.assertEqual(5, manifest["checkpoint_metadata"]["epoch"])
+            self.assertEqual(12, manifest["checkpoint_metadata"]["global_step"])
+            self.assertEqual(3, manifest["strict_resume_requirements"]["num_devices"])
+            self.assertEqual("ddp", manifest["strict_resume_requirements"]["strategy"])
+            self.assertEqual("strict", manifest["strict_resume_requirements"]["save_mode"])
+            self.assertEqual(3, manifest["strict_resume_requirements"]["world_size"])
+            self.assertTrue(manifest["strict_resume_requirements"]["must_keep_distributed_directory"])
+            self.assertIn("how_to_resume_strict", manifest["strict_resume_requirements"])
+            self.assertEqual("turbo", manifest["training_config"]["model_variant"])
+
+
+class TestPortableCheckpointRouting(unittest.TestCase):
+    """Portable multi-GPU full SFT saves should stay rank-0 only."""
+
+    def test_portable_mode_does_not_request_all_rank_distributed_save(self):
+        cfg = type('Cfg', (), {
+            'full_sft': True,
+            'save_every_n_epochs': 5,
+            'save_distributed_checkpoint': False,
+        })()
+        distributed_strict_save = (
+            cfg.full_sft and 2 > 1 and getattr(cfg, 'save_distributed_checkpoint', False)
+        )
+        self.assertFalse(distributed_strict_save)
 
 
 class TestSaveAdapterFlatFullSFT(unittest.TestCase):
